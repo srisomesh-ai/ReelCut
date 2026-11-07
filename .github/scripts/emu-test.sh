@@ -17,6 +17,7 @@ adb exec-out screencap -p > emu-out/home.png
 # Print reel details + small frame sheets into the log (readable where artifact downloads are blocked)
 set +x
 command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null; }
+echo "==REPORT"; cat emu-out/report.txt
 for f in emu-out/reel_*.mp4; do
   echo "==INFO $f"; cat "${f%.mp4}.txt" 2>/dev/null
   ffprobe -v error -show_entries stream=codec_type,codec_name,width,height,avg_frame_rate:format=duration -of compact "$f"
