@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -30,7 +32,7 @@ android {
                 keyAlias = System.getenv("RC_KEY_ALIAS")
                 keyPassword = System.getenv("RC_KEY_PASS")
             } else {
-                val props = java.util.Properties()
+                val props = Properties()
                 rootProject.file("keystore/signing.properties").inputStream().use { props.load(it) }
                 storeFile = rootProject.file("keystore/reelcut.jks")
                 storePassword = props.getProperty("storePassword")
