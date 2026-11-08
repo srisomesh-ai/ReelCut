@@ -7,11 +7,18 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.LruCache
 import androidx.compose.foundation.BorderStroke
+import com.srisomesh.reelcut.engine.Styles
+import androidx.media3.exoplayer.SeekParameters
+import androidx.compose.ui.draw.alpha
+import androidx.compose.runtime.collectAsState
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -51,7 +58,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -95,6 +101,26 @@ fun FineTuneScreen(vm: ReelViewModel, ft: Screen.FineTune) {
     val dur = shot.t1 - shot.t0
     val beats = shot.b1 - shot.b0
     var picking by remember { mutableStateOf(false) }
+    val muted by vm.previewMuted.collectAsState()
+    // what the user is dragging right now (null = not dragging)
+    var live by remember(ft.sel, shot) { mutableStateOf<LiveEdit?>(null) }
+
+    // length of this shot if it gets [d] beats longer (null = not possible); cuts stay on the beat grid
+    val g = ft.grid
+    val end = ft.shots.last().b1
+    val isLast = ft.sel == ft.shots.lastIndex
+    val prevB0 = if (ft.sel > 0) ft.shots[ft.sel - 1].b0 else -1
+    val durFor: (Int) -> Double? = { d ->
+        when {
+            d == 0 -> dur
+            d < 1 - beats -> null
+            !isLast -> { val nb = shot.b1 + d; if (nb >= end) null else Styles.frameT(g[nb]) - Styles.frameT(g[shot.b0]) }
+            ft.shots.size == 1 -> null
+            else -> { val nb = shot.b0 - d; if (nb <= prevB0 || nb >= shot.b1) null else Styles.frameT(g[shot.b1]) - Styles.frameT(g[nb]) }
+        }
+    }
+    val shownBeats = live?.beats ?: beats
+    val shownDur = live?.dur ?: dur
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -106,7 +132,10 @@ fun FineTuneScreen(vm: ReelViewModel, ft: Screen.FineTune) {
             )
         }
 
-        ShotPreview(shot, vm.sessionSong, vm.songStart, Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp)))
+        ShotPreview(
+            shot, vm.sessionSong, vm.songStart, muted, live?.scrubAt, { vm.toggleMute() },
+            Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp)),
+        )
 
         ShotStrip(ft.shots, ft.sel) { vm.selectShot(it) }
 
@@ -116,10 +145,15 @@ fun FineTuneScreen(vm: ReelViewModel, ft: Screen.FineTune) {
                 if (media != null && !media.isImage) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("${vm.mediaName(media)} · moment", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                        Text("from ${"%.1f".format(shot.src0)}s", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("from ${"%.1f".format(live?.src0 ?: shot.src0)}s", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    MomentBar(media, shot.src0, dur) { vm.setMoment(it) }
-                    Text("Drag the box to pick which part of the clip plays", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    MomentBar(
+                        media, shot.src0, dur, beats, durFor,
+                        onLive = { live = it },
+                        onMove = { vm.setMoment(it) },
+                        onResize = { d, src0 -> vm.resizeShot(d, src0) },
+                    )
+                    Text("Drag the box to pick the part. Drag its edges to make the shot longer or shorter.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
                     Text("${vm.mediaName(media)} · photo", style = MaterialTheme.typography.titleSmall)
                     Text("Photos play with a slow zoom. Use Change clip to put a video here.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -129,7 +163,7 @@ fun FineTuneScreen(vm: ReelViewModel, ft: Screen.FineTune) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Length", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                     Text(
-                        "$beats ${if (beats == 1) "beat" else "beats"} · ${"%.2f".format(dur)}s",
+                        "$shownBeats ${if (shownBeats == 1) "beat" else "beats"} · ${"%.2f".format(shownDur)}s",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -174,15 +208,30 @@ private fun Card(content: @Composable () -> Unit) {
 private fun ShotStrip(shots: List<Shot>, sel: Int, onSelect: (Int) -> Unit) {
     val state = rememberLazyListState()
     LaunchedEffect(sel) { state.animateScrollToItem((sel - 2).coerceAtLeast(0)) }
-    LazyRow(state = state, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().height(66.dp)) {
+    LazyRow(
+        state = state,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().height(80.dp),
+    ) {
         itemsIndexed(shots) { i, sh ->
             val selected = i == sel
             Box(
-                Modifier.padding(2.dp).width(40.dp).height(62.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFF222222))
-                    .then(if (selected) Modifier.border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary), RoundedCornerShape(6.dp)) else Modifier)
+                Modifier.padding(2.dp)
+                    .width(if (selected) 50.dp else 40.dp).height(if (selected) 74.dp else 62.dp)
+                    .alpha(if (selected) 1f else 0.45f)
+                    .clip(RoundedCornerShape(8.dp)).background(Color(0xFF222222))
+                    .then(if (selected) Modifier.border(BorderStroke(3.dp, MaterialTheme.colorScheme.primary), RoundedCornerShape(8.dp)) else Modifier)
                     .clickable { onSelect(i) },
             ) {
                 Thumb(sh.media, sh.src0 + (sh.t1 - sh.t0) / 2, Modifier.fillMaxSize())
+                if (selected) {
+                    Text(
+                        "Editing", color = Color.White, fontSize = 9.sp,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 4.dp)
+                            .clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.primary).padding(horizontal = 4.dp),
+                    )
+                }
                 Text(
                     "%.1f".format(sh.t0), color = Color.White, fontSize = 10.sp, textAlign = TextAlign.Center,
                     modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color(0x88000000)),
@@ -194,51 +243,144 @@ private fun ShotStrip(shots: List<Shot>, sel: Int, onSelect: (Int) -> Unit) {
 
 // ---------------------------------------------------------- moment bar ---
 
-/** The whole clip as a bar; the box is the part this shot plays. Drag it (or tap) to move. */
+/** While dragging on the clip bar: what the shot would become, and which clip time the preview shows. */
+data class LiveEdit(val src0: Double, val dur: Double, val beats: Int, val scrubAt: Double)
+
+private enum class Grab { MOVE, LEFT, RIGHT }
+
+/**
+ * The whole clip as a bar; the box is the part this shot plays.
+ * Drag the box (or tap) to move it; drag its left/right handle to make the shot longer or shorter, snapped to beats.
+ */
 @Composable
-private fun MomentBar(media: MediaInfo, src0: Double, shotDur: Double, onChange: (Double) -> Unit) {
+private fun MomentBar(
+    media: MediaInfo,
+    src0: Double,
+    shotDur: Double,
+    beats: Int,
+    durFor: (Int) -> Double?,
+    onLive: (LiveEdit?) -> Unit,
+    onMove: (Double) -> Unit,
+    onResize: (Int, Double?) -> Unit,
+) {
     val clipDur = media.dur.coerceAtLeast(0.1)
-    val maxStart = (clipDur - shotDur - 0.05).coerceAtLeast(0.0)
-    val boxFrac = (shotDur / clipDur).coerceIn(0.04, 1.0).toFloat()
-    var dragStart by remember(media, src0) { mutableFloatStateOf(-1f) }   // -1 = not dragging
-    val onChangeNow by rememberUpdatedState(onChange)
     val density = LocalDensity.current
+    val handleZone = with(density) { 26.dp.toPx() }
+    val minBoxPx = with(density) { 14.dp.toPx() }
+    var liveSrc0 by remember(media, src0, shotDur) { mutableStateOf<Double?>(null) }
+    var liveDur by remember(media, src0, shotDur) { mutableStateOf<Double?>(null) }
+    val cb by rememberUpdatedState(Triple(onLive, onMove, onResize))
+    val durForNow by rememberUpdatedState(durFor)
 
-    BoxWithConstraints(
-        Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surface)
-    ) {
+    // snap a wanted length to a whole number of beats that fits in the clip
+    fun snap(want: Double, maxDur: Double): Pair<Int, Double> {
+        var best = 0 to shotDur
+        var d = 1 - beats
+        while (d <= 64) {
+            val v = durForNow(d)
+            if (v == null) { if (d > 0) break; d++; continue }
+            if (v <= maxDur + 1e-6 && kotlin.math.abs(v - want) < kotlin.math.abs(best.second - want)) best = d to v
+            d++
+        }
+        return best
+    }
+
+    BoxWithConstraints(Modifier.fillMaxWidth().height(48.dp)) {
         val widthPx = with(density) { maxWidth.toPx() }
-        val boxPx = widthPx * boxFrac
-        val shown = if (dragStart >= 0f) dragStart.toDouble() else src0
-        val leftPx = if (maxStart <= 0.0) 0f else ((shown / maxStart) * (widthPx - boxPx)).toFloat()
-        fun startAt(xLeft: Float): Double =
-            if (widthPx - boxPx <= 0f) 0.0 else ((xLeft / (widthPx - boxPx)).coerceIn(0f, 1f) * maxStart)
+        val pad = with(density) { 12.dp.toPx() }          // room for the handles at both ends
+        val barW = (widthPx - 2 * pad).coerceAtLeast(1f)
+        fun xOf(t: Double) = pad + (t / clipDur * barW).toFloat()
+        fun tOf(x: Float) = ((x - pad) / barW * clipDur).coerceIn(0.0, clipDur)
+        val s0 = liveSrc0 ?: src0
+        val d0 = liveDur ?: shotDur
+        val left = xOf(s0)
+        val right = maxOf(xOf(s0 + d0), left + minBoxPx)
 
-        // a few frames of the clip behind the box
-        Row(Modifier.fillMaxSize()) {
+        // the clip's frames, darkened outside the box
+        Row(Modifier.padding(horizontal = 12.dp).fillMaxSize().clip(RoundedCornerShape(8.dp))) {
             repeat(6) { i -> Thumb(media, clipDur * (i + 0.5) / 6, Modifier.weight(1f).fillMaxHeight()) }
         }
-        Box(Modifier.fillMaxSize().background(Color(0x55000000)))
+        Box(Modifier.padding(horizontal = 12.dp).fillMaxSize().clip(RoundedCornerShape(8.dp)).background(Color(0x99000000)))
+        // the chosen part: bright box with a grip handle on each edge
         Box(
-            Modifier.fillMaxSize()
-                .pointerInput(media, maxStart, widthPx) {
-                    detectTapGestures { pos -> onChangeNow(startAt(pos.x - boxPx / 2)) }
-                }
-                .pointerInput(media, maxStart, widthPx) {
-                    var x = 0f
-                    detectHorizontalDragGestures(
-                        onDragStart = { pos -> x = pos.x - boxPx / 2; dragStart = startAt(x).toFloat() },
-                        onDragEnd = { val v = dragStart.toDouble(); dragStart = -1f; onChangeNow(v) },
-                        onDragCancel = { dragStart = -1f },
-                    ) { _, dx -> x += dx; dragStart = startAt(x).toFloat() }
-                }
-        ) {
+            Modifier.offset(x = with(density) { left.toDp() }).width(with(density) { (right - left).toDp() }).fillMaxHeight()
+                .border(BorderStroke(3.dp, Color(0xFF8AB4F8)), RoundedCornerShape(6.dp)).background(Color(0x40FFFFFF))
+        )
+        for (edge in listOf(left, right)) {
             Box(
-                Modifier.offset(x = with(density) { leftPx.toDp() }).width(with(density) { boxPx.toDp() }).fillMaxHeight()
-                    .border(BorderStroke(3.dp, MaterialTheme.colorScheme.primary), RoundedCornerShape(6.dp))
-                    .background(Color(0x22FFFFFF))
+                Modifier.offset(x = with(density) { (edge - 5.dp.toPx()).toDp() }, y = 12.dp)
+                    .width(10.dp).height(24.dp).clip(RoundedCornerShape(5.dp)).background(Color.White)
+                    .border(BorderStroke(1.dp, Color(0xFF185FA5)), RoundedCornerShape(5.dp))
             )
         }
+        Box(
+            Modifier.fillMaxSize()
+                .pointerInput(media, src0, shotDur, widthPx) {
+                    detectTapGestures { pos ->
+                        if (kotlin.math.abs(pos.x - left) > handleZone && kotlin.math.abs(pos.x - right) > handleZone) {
+                            val maxStart = (clipDur - shotDur - 0.05).coerceAtLeast(0.0)
+                            cb.second((tOf(pos.x) - shotDur / 2).coerceIn(0.0, maxStart))
+                        }
+                    }
+                }
+                .pointerInput(media, src0, shotDur, widthPx) {
+                    var grab = Grab.MOVE
+                    var x = 0f
+                    var xStart = 0f
+                    var startSrc = src0
+                    var resizeD = 0
+                    val endT = src0 + shotDur
+                    fun report() {
+                        val s = liveSrc0 ?: src0; val d = liveDur ?: shotDur
+                        val at = when (grab) { Grab.MOVE -> s; Grab.LEFT -> s; Grab.RIGHT -> (s + d - 0.04).coerceAtLeast(s) }
+                        cb.first(LiveEdit(s, d, beats + resizeD, at))
+                    }
+                    fun update() {
+                        when (grab) {
+                            Grab.MOVE -> {
+                                val maxStart = (clipDur - shotDur - 0.05).coerceAtLeast(0.0)
+                                liveSrc0 = (startSrc + (x - xStart) / barW * clipDur).coerceIn(0.0, maxStart)
+                                liveDur = shotDur
+                            }
+                            Grab.RIGHT -> {
+                                val (d, v) = snap(tOf(x) - src0, clipDur - src0 - 0.05)
+                                resizeD = d; liveDur = v; liveSrc0 = src0
+                            }
+                            Grab.LEFT -> {
+                                val (d, v) = snap(endT - tOf(x), endT)
+                                resizeD = d; liveDur = v; liveSrc0 = (endT - v).coerceAtLeast(0.0)
+                            }
+                        }
+                        report()
+                    }
+                    detectDragGestures(
+                        onDragStart = { pos ->
+                            x = pos.x; xStart = pos.x; resizeD = 0
+                            grab = when {
+                                pos.x in left..right && right - left > 2 * handleZone -> Grab.MOVE
+                                kotlin.math.abs(pos.x - right) <= handleZone && pos.x >= (left + right) / 2 -> Grab.RIGHT
+                                kotlin.math.abs(pos.x - left) <= handleZone -> Grab.LEFT
+                                kotlin.math.abs(pos.x - right) <= handleZone -> Grab.RIGHT
+                                else -> Grab.MOVE
+                            }
+                            // grabbed outside the box: the box jumps to the finger first
+                            startSrc = if (grab == Grab.MOVE && pos.x !in left..right) tOf(pos.x) - shotDur / 2 else src0
+                            update()
+                        },
+                        onDragEnd = {
+                            val s = liveSrc0; val g = grab; val d = resizeD
+                            liveSrc0 = null; liveDur = null
+                            cb.first(null)
+                            when (g) {
+                                Grab.MOVE -> if (s != null) cb.second(s)
+                                Grab.RIGHT -> if (d != 0) cb.third(d, null)
+                                Grab.LEFT -> if (d != 0) cb.third(d, s)
+                            }
+                        },
+                        onDragCancel = { liveSrc0 = null; liveDur = null; cb.first(null) },
+                    ) { change, drag -> change.consume(); x += drag.x; update() }
+                }
+        )
     }
 }
 
@@ -276,10 +418,21 @@ private fun ClipPicker(vm: ReelViewModel, current: MediaInfo?, onPick: (MediaInf
 
 // ------------------------------------------------------------- preview ---
 
-/** Plays just this shot (the clip part, or the photo) with its piece of the song, on a loop. */
+/**
+ * Plays just this shot (the clip part, or the photo) with its piece of the song, on a loop.
+ * While the user drags on the clip bar ([scrubAt] set) it shows that exact frame instead.
+ */
 @UnstableApi
 @Composable
-private fun ShotPreview(shot: Shot, song: Uri?, songStart: Double, modifier: Modifier) {
+private fun ShotPreview(
+    shot: Shot,
+    song: Uri?,
+    songStart: Double,
+    muted: Boolean,
+    scrubAt: Double?,
+    onToggleMute: () -> Unit,
+    modifier: Modifier,
+) {
     val ctx = LocalContext.current
     val media = shot.media
     val durMs = ((shot.t1 - shot.t0) * 1000).roundToLong()
@@ -306,6 +459,27 @@ private fun ShotPreview(shot: Shot, song: Uri?, songStart: Double, modifier: Mod
     }
     DisposableEffect(key) { onDispose { audio?.release(); video?.release() } }
 
+    // whole clip, paused, for showing the exact frame under the finger
+    val scrub = remember(media?.uri) {
+        if (media == null || media.isImage) null else ExoPlayer.Builder(ctx).build().apply {
+            setMediaItem(MediaItem.fromUri(media.uri))
+            volume = 0f
+            setSeekParameters(SeekParameters.EXACT)
+            playWhenReady = false
+            prepare()
+        }
+    }
+    val seeker = remember(scrub) { Seeker(scrub) }
+    DisposableEffect(scrub) { onDispose { scrub?.release() } }
+
+    LaunchedEffect(audio, muted) { audio?.volume = if (muted) 0f else 1f }
+    val scrubbing = scrubAt != null && scrub != null
+    LaunchedEffect(scrubbing, key) {
+        if (scrubbing) { video?.pause(); audio?.pause() }
+        else { video?.seekTo(0); audio?.seekTo(0); video?.play(); audio?.play() }
+    }
+    LaunchedEffect(scrubAt) { scrubAt?.let { seeker.request((it * 1000).roundToLong()) } }
+
     Box(modifier.background(Color.Black), contentAlignment = Alignment.Center) {
         if (video != null) {
             AndroidView(
@@ -316,11 +490,49 @@ private fun ShotPreview(shot: Shot, song: Uri?, songStart: Double, modifier: Mod
                         setShutterBackgroundColor(android.graphics.Color.BLACK)
                     }
                 },
-                update = { it.player = video },
+                update = { it.player = if (scrubbing) scrub else video },
                 modifier = Modifier.fillMaxHeight().aspectRatio(9f / 16f),
             )
         } else {
             Thumb(media, 0.0, Modifier.fillMaxHeight().aspectRatio(9f / 16f), large = true)
+        }
+        if (muted) {
+            Text(
+                "Sound off", color = Color.White, fontSize = 12.sp,
+                modifier = Modifier.align(Alignment.TopStart).padding(10.dp)
+                    .clip(RoundedCornerShape(6.dp)).background(Color(0x8C000000)).padding(horizontal = 8.dp, vertical = 3.dp),
+            )
+        }
+        IconButton(
+            onClick = onToggleMute,
+            modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(40.dp).clip(CircleShape).background(Color(0x8C000000)),
+        ) {
+            Icon(
+                if (muted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                if (muted) "Turn sound on" else "Turn sound off", tint = Color.White,
+            )
+        }
+    }
+}
+
+/** Seeks one at a time: while a seek is running only the newest wanted position is kept. */
+private class Seeker(private val p: ExoPlayer?) : Player.Listener {
+    private var busySince = 0L
+    private var pending = -1L
+    init { p?.addListener(this) }
+
+    fun request(ms: Long) {
+        val pl = p ?: return
+        val now = android.os.SystemClock.uptimeMillis()
+        if (busySince != 0L && now - busySince < 400) { pending = ms; return }
+        busySince = now
+        pl.seekTo(ms)
+    }
+
+    override fun onPlaybackStateChanged(state: Int) {
+        if (state == Player.STATE_READY && busySince != 0L) {
+            busySince = 0L
+            if (pending >= 0) { val t = pending; pending = -1; request(t) }
         }
     }
 }

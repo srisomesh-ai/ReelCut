@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -56,6 +57,13 @@ class FineTuneUiTest {
         Thread.sleep(2500)   // thumbnails + preview load
         rule.waitForIdle()
 
+        // sound off: the button turns the preview song off and the "Sound off" tag shows
+        if (!vm.previewMuted.value) rule.onNodeWithContentDescription("Turn sound off").performClick()
+        rule.waitForIdle()
+        assertTrue(vm.previewMuted.value)
+        rule.onNodeWithText("Sound off").assertExists()
+        rule.onNodeWithText("Editing").assertExists()
+
         val out = File(ctx.filesDir, "test-out").apply { mkdirs() }
         File(out, "finetune.png").outputStream().use {
             rule.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
@@ -68,5 +76,18 @@ class FineTuneUiTest {
         assertTrue("edit should be marked", ft.changed)
         assertEquals("selected shot one beat longer", before[sel].b1 + 1, ft.shots[sel].b1)
         assertEquals("reel keeps its length", before.last().t1, ft.shots.last().t1, 0.001)
+
+        // edge handles: right edge +2 beats, then left edge -1 beat with a new clip start
+        inst.runOnMainSync { vm.resizeShot(2, null) }
+        val ft2 = vm.screen.value as Screen.FineTune
+        assertEquals("right edge: 2 beats longer", ft.shots[sel].b1 + 2, ft2.shots[sel].b1)
+        assertEquals("reel keeps its length", before.last().t1, ft2.shots.last().t1, 0.001)
+        val newStart = ft2.shots[sel].src0 + 0.3
+        inst.runOnMainSync { vm.resizeShot(-1, newStart) }
+        val ft3 = vm.screen.value as Screen.FineTune
+        assertEquals("left edge: 1 beat shorter", ft2.shots[sel].b1 - 1, ft3.shots[sel].b1)
+        assertEquals("left edge moves the clip start", newStart, ft3.shots[sel].src0, 0.001)
+        assertEquals("reel keeps its length", before.last().t1, ft3.shots.last().t1, 0.001)
+        inst.runOnMainSync { vm.toggleMute() }   // leave sound on for the next run
     }
 }

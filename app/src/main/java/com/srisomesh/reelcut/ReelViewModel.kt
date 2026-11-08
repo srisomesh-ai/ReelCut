@@ -204,6 +204,27 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
         if (d < 0) "This shot is already 1 beat" else "No room to make this shot longer",
     )
 
+    /** Edge handles: shot [d] beats longer/shorter; [newSrc0] = new clip start when the left edge was dragged. */
+    fun resizeShot(d: Int, newSrc0: Double?) = editFt({ ft ->
+        var cur = ft.shots
+        var done = 0
+        val step = if (d > 0) 1 else -1
+        while (done < kotlin.math.abs(d)) {
+            cur = ShotEdits.changeLength(cur, ft.grid, ft.sel, step) ?: break
+            done++
+        }
+        if (done == 0 && newSrc0 == null) null
+        else if (newSrc0 != null) ShotEdits.setMoment(cur, ft.sel, newSrc0) else cur
+    }, "No room to change this shot")
+
+    /** Song on/off in the Fine-tune preview (remembered; never affects the exported reel). */
+    private val prefs = app.getSharedPreferences("reelcut", android.content.Context.MODE_PRIVATE)
+    val previewMuted = MutableStateFlow(prefs.getBoolean("ft_muted", false))
+    fun toggleMute() {
+        previewMuted.value = !previewMuted.value
+        prefs.edit().putBoolean("ft_muted", previewMuted.value).apply()
+    }
+
     fun removeShot() = editFt({ ShotEdits.remove(it.shots, it.grid, it.sel) }, "A reel needs at least one shot")
 
     fun setMoment(src0: Double) = editFt({ ShotEdits.setMoment(it.shots, it.sel, src0) })
