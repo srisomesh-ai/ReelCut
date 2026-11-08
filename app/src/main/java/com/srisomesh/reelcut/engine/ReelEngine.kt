@@ -34,7 +34,32 @@ object ReelEngine {
         return ReelSession(song, analysis, scanned)
     }
 
-    /** Same session + variation + look always gives the same edit, so the export matches the preview. */
+    /** Same session + variation + look always gives the same plan, so the export matches the preview. */
+    fun plan(session: ReelSession, variation: Int, forcedLook: String?): Plan {
+        val r = Random(session.analysis.seed + variation * 7919)
+        val style = Styles.choose(session.analysis, r, forcedLook)
+        val shots = Styles.planShots(session.analysis, style, r)
+        ClipScanner.assign(shots, session.media, r)
+        return Plan(style, shots, Styles.grid(session.analysis))
+    }
+
+    /** Renders a plan (automatic or fine-tuned by hand). */
+    suspend fun render(
+        context: Context,
+        session: ReelSession,
+        plan: Plan,
+        width: Int,
+        height: Int,
+        out: File,
+        progress: (String, Float) -> Unit,
+    ): ReelResult {
+        progress("Making your reel", 0.4f)
+        Renderer.render(context, session.analysis, plan.style, plan.shots, session.song, out, width, height) { f ->
+            progress("Making your reel", 0.4f + 0.6f * f)
+        }
+        return ReelResult(out, plan.style, plan.shots.size)
+    }
+
     suspend fun render(
         context: Context,
         session: ReelSession,
@@ -44,15 +69,5 @@ object ReelEngine {
         height: Int,
         out: File,
         progress: (String, Float) -> Unit,
-    ): ReelResult {
-        val r = Random(session.analysis.seed + variation * 7919)
-        val style = Styles.choose(session.analysis, r, forcedLook)
-        val shots = Styles.planShots(session.analysis, style, r)
-        ClipScanner.assign(shots, session.media, r)
-        progress("Making your reel", 0.4f)
-        Renderer.render(context, session.analysis, style, shots, session.song, out, width, height) { f ->
-            progress("Making your reel", 0.4f + 0.6f * f)
-        }
-        return ReelResult(out, style, shots.size)
-    }
+    ): ReelResult = render(context, session, plan(session, variation, forcedLook), width, height, out, progress)
 }

@@ -6,8 +6,13 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.util.UnstableApi
+import com.srisomesh.reelcut.engine.ClipScanner
+import com.srisomesh.reelcut.engine.MediaInfo
+import com.srisomesh.reelcut.engine.Plan
 import com.srisomesh.reelcut.engine.ReelEngine
 import com.srisomesh.reelcut.engine.ReelSession
+import com.srisomesh.reelcut.engine.Shot
+import com.srisomesh.reelcut.engine.ShotEdits
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -31,6 +36,14 @@ sealed interface Screen {
         val exported: File? = null,
     ) : Screen
     data class Viewer(val item: Library.Item) : Screen
+    /** Fine-tune: the shots being edited (not yet applied), the selected one, and the result to go back to. */
+    data class FineTune(
+        val shots: List<Shot>,
+        val sel: Int,
+        val grid: DoubleArray,
+        val back: Result,
+        val changed: Boolean = false,
+    ) : Screen
 }
 
 @UnstableApi
@@ -45,7 +58,28 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
     private var session: ReelSession? = null
     private var variation = 0
     private var lookKey: String? = null
+    private var plan: Plan? = null
+    private var edited = false   // the plan has hand edits from Fine-tune
     private var job: Job? = null
+
+    /** The song and every picked clip/photo, for the Fine-tune screen. */
+    val sessionSong: Uri? get() = session?.song
+    val songStart: Double get() = session?.analysis?.start ?: 0.0
+    val pickedMedia: List<MediaInfo> get() = session?.media?.filter { it.ok }.orEmpty()
+
+    /** "Clip 2" / "Photo 1", numbered in the order they were picked. */
+    fun mediaName(m: MediaInfo?): String {
+        val all = session?.media ?: return ""
+        if (m == null) return ""
+        val same = all.filter { it.isImage == m.isImage }
+        return (if (m.isImage) "Photo " else "Clip ") + (same.indexOf(m) + 1)
+    }
+
+    private fun newPlan() {
+        val s = session ?: return
+        plan = ReelEngine.plan(s, variation, lookKey)
+        edited = false
+    }
 
     fun say(msg: String) { messages.tryEmit(msg) }
 
@@ -62,6 +96,7 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
         job = viewModelScope.launch {
             try {
                 session = ReelEngine.prepare(app, media, song, reelLen.value.toDouble()) { st, p -> update(st, p) }
+                newPlan()
                 renderPreview()
             } catch (c: CancellationException) {
                 throw c
@@ -77,12 +112,13 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private suspend fun renderPreview() {
         val s = session ?: return
+        val pl = plan ?: return
         screen.value = Screen.Working("Making your reel", 0.4f)
         withContext(Dispatchers.IO) {
             app.cacheDir.listFiles { f -> f.name.startsWith("preview_") }?.forEach { it.delete() }
         }
         val out = File(app.cacheDir, "preview_${System.currentTimeMillis()}.mp4")
-        val res = ReelEngine.render(app, s, variation, lookKey, 720, 1280, out) { st, p -> update(st, p) }
+        val res = ReelEngine.render(app, s, pl, 720, 1280, out) { st, p -> update(st, p) }
         screen.value = Screen.Result(out, res.style.look.key, res.style.look.name, s.analysis.bpm.roundToInt())
     }
 
@@ -94,24 +130,27 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun anotherEdit() { variation++; lookKey = null; rerender() }
+    fun anotherEdit() { variation++; lookKey = null; newPlan(); rerender() }
 
     fun pickLook(key: String) {
         val r = screen.value as? Screen.Result ?: return
         if (r.exporting || key == r.lookKey) return
         lookKey = key
+        // hand edits are kept; only the look changes
+        if (edited) plan = plan?.withLook(key) else newPlan()
         rerender()
     }
 
     fun export() {
         val r = screen.value as? Screen.Result ?: return
         val s = session ?: return
+        val pl = plan ?: return
         if (r.exporting) return
         screen.value = r.copy(exporting = true, exportProgress = 0f)
         job = viewModelScope.launch {
             try {
                 val out = Library.newFile(app)
-                ReelEngine.render(app, s, variation, lookKey, 1080, 1920, out) { _, p ->
+                ReelEngine.render(app, s, pl, 1080, 1920, out) { _, p ->
                     val cur = screen.value
                     if (cur is Screen.Result && cur.exporting) screen.value = cur.copy(exportProgress = ((p - 0.4f) / 0.6f).coerceIn(0f, 1f))
                 }
@@ -139,6 +178,57 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
         return "${s.analysis.len.roundToInt()}s"
     }
 
+    // ---------------------------------------------------------- Fine-tune ---
+
+    fun openFineTune() {
+        val r = screen.value as? Screen.Result ?: return
+        val pl = plan ?: return
+        if (r.exporting) return
+        screen.value = Screen.FineTune(pl.shots, 0, pl.grid, r)
+    }
+
+    private fun editFt(change: (Screen.FineTune) -> List<Shot>?, failMsg: String? = null) {
+        val ft = screen.value as? Screen.FineTune ?: return
+        val next = change(ft)
+        if (next == null) { failMsg?.let { say(it) }; return }
+        screen.value = ft.copy(shots = next, sel = ft.sel.coerceAtMost(next.lastIndex), changed = true)
+    }
+
+    fun selectShot(i: Int) {
+        val ft = screen.value as? Screen.FineTune ?: return
+        if (i in ft.shots.indices) screen.value = ft.copy(sel = i)
+    }
+
+    fun changeLength(d: Int) = editFt(
+        { ShotEdits.changeLength(it.shots, it.grid, it.sel, d) },
+        if (d < 0) "This shot is already 1 beat" else "No room to make this shot longer",
+    )
+
+    fun removeShot() = editFt({ ShotEdits.remove(it.shots, it.grid, it.sel) }, "A reel needs at least one shot")
+
+    fun setMoment(src0: Double) = editFt({ ShotEdits.setMoment(it.shots, it.sel, src0) })
+
+    fun setClip(m: MediaInfo) = editFt({ ft ->
+        val sh = ft.shots[ft.sel]
+        ShotEdits.setMedia(ft.shots, ft.sel, m, ClipScanner.bestMoment(m, sh.t1 - sh.t0))
+    })
+
+    /** For the emulator UI test only: load a made session + plan and open Fine-tune on shot [sel]. */
+    fun loadForTest(s: ReelSession, p: Plan, sel: Int) {
+        session = s; plan = p
+        val r = Screen.Result(File(app.cacheDir, "none.mp4"), p.style.look.key, p.style.look.name, s.analysis.bpm.roundToInt())
+        screen.value = Screen.FineTune(p.shots, sel, p.grid, r)
+    }
+
+    fun applyFineTune() {
+        val ft = screen.value as? Screen.FineTune ?: return
+        val pl = plan ?: return
+        if (!ft.changed) { screen.value = ft.back; return }
+        plan = Plan(pl.style, ft.shots, ft.grid)
+        edited = true
+        rerender()
+    }
+
     fun open(item: Library.Item) { screen.value = Screen.Viewer(item) }
 
     fun delete(item: Library.Item) {
@@ -152,6 +242,11 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
         when (screen.value) {
             is Screen.Working, is Screen.Result -> { job?.cancel(); screen.value = Screen.Home }
             is Screen.Viewer -> screen.value = Screen.Home
+            is Screen.FineTune -> {
+                val ft = screen.value as Screen.FineTune
+                screen.value = ft.back
+                if (ft.changed) say("Changes not applied")
+            }
             Screen.Home -> {}
         }
     }

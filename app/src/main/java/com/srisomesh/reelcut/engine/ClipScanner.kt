@@ -112,6 +112,13 @@ object ClipScanner {
         return DoubleArray(a.size) { if (hi - lo < 1e-6) 0.5 else (a[it] - lo) / (hi - lo) }
     }
 
+    /** The best-looking moment of [need] seconds in a clip (0 for photos); used when a shot's clip is changed by hand. */
+    fun bestMoment(m: MediaInfo, need: Double): Double {
+        if (m.isImage || m.samples.isEmpty()) return 0.0
+        val s = m.samples.maxByOrNull { 0.4 * it.motN + 0.45 * it.sharpN + 0.15 * it.light } ?: return 0.0
+        return (s.t - need / 2).coerceIn(0.0, max(0.0, m.dur - need - 0.05))
+    }
+
     /** Gives every shot its clip and the best unused moment in it. */
     fun assign(shots: List<Shot>, media: List<MediaInfo>, r: Random) {
         val ok = media.filter { it.ok }

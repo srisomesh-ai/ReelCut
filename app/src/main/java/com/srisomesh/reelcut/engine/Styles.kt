@@ -42,7 +42,8 @@ class Style(
 
 enum class Trans { CUT, FLASH, FADE, ZOOM, WHIP }
 
-class Shot(
+/** One cut of the reel. [b0]/[b1] are positions on the beat grid ([Styles.grid]), so edits stay on the beat. */
+data class Shot(
     val t0: Double,
     val t1: Double,
     val hot: Boolean,
@@ -51,12 +52,26 @@ class Shot(
     val kb: Int,
     val panX: Double,
     val panY: Double,
-) {
-    var media: MediaInfo? = null
-    var src0: Double = 0.0
-}
+    val b0: Int = 0,
+    val b1: Int = 0,
+    var media: MediaInfo? = null,
+    var src0: Double = 0.0,
+)
 
 object Styles {
+
+    /** Shortest and longest shot the automatic edit makes (seconds). */
+    const val MIN_SHOT = 0.45
+    const val MAX_SHOT = 2.5
+
+    /** Beat times of the reel, plus the reel end if it is not on a beat. Cuts are always on this grid. */
+    fun grid(a: SongAnalysis): DoubleArray =
+        if (a.rel.isNotEmpty() && a.rel.last() >= a.len - 0.02) a.rel.copyOf() else a.rel + a.len
+
+    /** A grid time rounded to a whole video frame (30 fps). */
+    fun frameT(t: Double): Double = (t * 30).roundToInt() / 30.0
+
+    fun withLook(s: Style, key: String) = Style(Looks.byKey(key), s.energetic, s.bright, s.heavy, s.calm, s.hot)
 
     /** The song's profile picks the look and the cutting rhythm. */
     fun choose(a: SongAnalysis, r: Random, forcedLook: String?): Style {
@@ -72,7 +87,9 @@ object Styles {
         val roll = r.nextDouble()
         val key = forcedLook ?: if (roll < 0.65) pool[0] else pool[1]
         val beat = 60.0 / a.bpm
-        fun fit(maxSec: Double) = listOf(4, 2, 1).firstOrNull { it * beat <= maxSec } ?: 1
+        // most beats per cut that stay under maxSec, but never shorter than MIN_SHOT (very fast songs cut every 2 beats)
+        fun fit(maxSec: Double) = listOf(4, 2, 1).firstOrNull { it * beat <= maxSec && it * beat >= MIN_SHOT }
+            ?: listOf(1, 2, 4).firstOrNull { it * beat >= MIN_SHOT } ?: 4
         val calm = fit(if (energetic) 1.0 else 2.4)
         val hot = fit(if (energetic) 0.5 else 1.2)
         return Style(Looks.byKey(key), energetic, bright, heavy, calm, hot)
@@ -80,21 +97,41 @@ object Styles {
 
     fun planShots(a: SongAnalysis, s: Style, r: Random): List<Shot> {
         val hotTh = SongAnalyzer.pct(a.energy, 55.0)
-        val cuts = arrayListOf(0.0)
+        val g = grid(a)
+        val end = g.lastIndex
+        val cuts = arrayListOf(0)            // grid positions
         val hots = arrayListOf<Boolean>()
+        // too long a span: cut it on beats so no shot is longer than MAX_SHOT
+        fun addSplit(to: Int, hot: Boolean) {
+            while (g[to] - g[cuts.last()] > MAX_SHOT) {
+                val from = cuts.last()
+                var pick = -1
+                for (j in from + 1 until to) {
+                    val d = g[j] - g[from]
+                    if (d >= MIN_SHOT && d <= MAX_SHOT && g[to] - g[j] >= MIN_SHOT) pick = j
+                }
+                if (pick < 0) break
+                cuts.add(pick); hots.add(hot)
+            }
+            cuts.add(to); hots.add(hot)
+        }
         var i = 0
         while (i < a.rel.size) {
             val hot = a.energy[i] >= hotTh
             i += if (hot) s.hot else s.calm
-            val nx = if (i < a.rel.size) a.rel[i] else a.len
-            if (nx - cuts.last() < 0.3) continue
-            cuts.add(nx); hots.add(hot)
+            val nx = if (i < a.rel.size) i else end
+            if (g[nx] - g[cuts.last()] < MIN_SHOT) continue
+            addSplit(nx, hot)
+            if (nx == end) break
         }
-        if (cuts.last() < a.len - 0.05) {
-            if (a.len - cuts.last() < 0.3 && cuts.size > 1) cuts[cuts.size - 1] = a.len
-            else { cuts.add(a.len); hots.add(false) }
+        if (cuts.last() < end) {
+            if (g[end] - g[cuts.last()] < MIN_SHOT && cuts.size > 1) {
+                // a too-short tail joins the shot before it (split again if that gets too long)
+                cuts.removeAt(cuts.lastIndex)
+                addSplit(end, hots.removeAt(hots.lastIndex))
+            } else addSplit(end, false)
         }
-        val frames = cuts.map { (it * 30).roundToInt() }
+        val frames = cuts.map { (g[it] * 30).roundToInt() }
         val shots = ArrayList<Shot>()
         for (k in 0 until frames.size - 1) {
             if (frames[k + 1] <= frames[k]) continue
@@ -113,6 +150,7 @@ object Styles {
             shots.add(
                 Shot(
                     t0, t1, hot, trans,
+                    b0 = cuts[k], b1 = cuts[k + 1],
                     punch = s.energetic && (hot || k % 2 == 0),
                     kb = if (r.nextDouble() < 0.5) 1 else -1,
                     panX = r.nextDouble() * 2 - 1,

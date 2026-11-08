@@ -109,6 +109,7 @@ fun App(vm: ReelViewModel = viewModel()) {
                 is Screen.Working -> WorkingScreen(s) { vm.back() }
                 is Screen.Result -> ResultScreen(vm, s)
                 is Screen.Viewer -> ViewerScreen(vm, s.item)
+                is Screen.FineTune -> FineTuneScreen(vm, s)
             }
         }
     }
@@ -284,7 +285,7 @@ private fun ResultScreen(vm: ReelViewModel, s: Screen.Result) {
             OutlinedButton(onClick = { vm.anotherEdit() }, modifier = Modifier.weight(1f), enabled = !s.exporting, shape = RoundedCornerShape(12.dp)) {
                 Icon(Icons.Filled.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Another edit")
             }
-            OutlinedButton(onClick = { vm.say("Fine-tune on the timeline comes in phase 2") }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(12.dp)) {
+            OutlinedButton(onClick = { vm.openFineTune() }, modifier = Modifier.weight(1f), enabled = !s.exporting, shape = RoundedCornerShape(12.dp)) {
                 Icon(Icons.Filled.Edit, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Fine-tune")
             }
         }

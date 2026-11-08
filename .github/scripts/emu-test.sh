@@ -6,7 +6,7 @@ mkdir -p emu-out
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 adb logcat -c
-adb shell am instrument -w -e class $PKG.RenderTest $PKG.test/androidx.test.runner.AndroidJUnitRunner | tee emu-out/instrument.txt
+adb shell am instrument -w -e class $PKG.RenderTest,$PKG.FineTuneUiTest $PKG.test/androidx.test.runner.AndroidJUnitRunner | tee emu-out/instrument.txt
 for f in $(adb shell run-as $PKG ls files/test-out | tr -d '\r'); do
   adb exec-out run-as $PKG cat "files/test-out/$f" > "emu-out/$f"
 done
@@ -25,5 +25,6 @@ for f in emu-out/reel_*.mp4; do
   ffmpeg -v error -y -i "$f" -vf "fps=2,scale=96:-1,tile=10x3" -frames:v 1 -q:v 6 "$f.jpg"
   echo "==B64 $f $(base64 -w0 "$f.jpg")"
 done
+[ -f emu-out/finetune.png ] && ffmpeg -v error -y -i emu-out/finetune.png -vf "scale=360:-1" -q:v 6 emu-out/finetune.jpg && echo "==B64 finetune $(base64 -w0 emu-out/finetune.jpg)"
 ffmpeg -v error -y -i emu-out/home.png -vf "scale=360:-1" -q:v 6 emu-out/home.jpg && echo "==B64 home $(base64 -w0 emu-out/home.jpg)"
-grep -q "OK (1 test)" emu-out/instrument.txt
+grep -q "OK (2 tests)" emu-out/instrument.txt

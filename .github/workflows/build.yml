@@ -37,7 +37,7 @@ jobs:
           RC_KEY_ALIAS: ${{ secrets.RC_KEY_ALIAS }}
           RC_KEY_PASS: ${{ secrets.RC_KEY_PASS }}
           VERSION_CODE: ${{ github.run_number }}
-        run: gradle --no-daemon assembleRelease
+        run: gradle --no-daemon testDebugUnitTest assembleRelease
       - name: Name APK
         run: cp app/build/outputs/apk/release/app-release.apk "ReelCut-1.0.${{ github.run_number }}.apk"
       - uses: actions/upload-artifact@v4
