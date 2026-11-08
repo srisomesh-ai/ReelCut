@@ -43,11 +43,13 @@ class FineTuneUiTest {
 
         val session = runBlocking { ReelEngine.prepare(ctx, media, Uri.fromFile(File(inDir, "song_fast.mp3")), 15.0) { _, _ -> } }
         val plan = ReelEngine.plan(session, 0, null)
+        // open on a video shot (not the last) so the screenshot shows the moment bar
+        val sel = plan.shots.indices.first { it >= 3 && it < plan.shots.lastIndex && plan.shots[it].media?.isImage == false }
 
         lateinit var vm: ReelViewModel
         inst.runOnMainSync {
             vm = ReelViewModel(ctx.applicationContext as Application)
-            vm.loadForTest(session, plan, 4)
+            vm.loadForTest(session, plan, sel)
         }
         rule.setContent { ReelCutTheme { App(vm) } }
         rule.waitForIdle()
@@ -64,7 +66,7 @@ class FineTuneUiTest {
         rule.waitForIdle()
         val ft = vm.screen.value as Screen.FineTune
         assertTrue("edit should be marked", ft.changed)
-        assertEquals("shot 5 one beat longer", before[4].b1 + 1, ft.shots[4].b1)
+        assertEquals("selected shot one beat longer", before[sel].b1 + 1, ft.shots[sel].b1)
         assertEquals("reel keeps its length", before.last().t1, ft.shots.last().t1, 0.001)
     }
 }
