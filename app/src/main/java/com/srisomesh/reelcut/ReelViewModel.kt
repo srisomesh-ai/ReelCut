@@ -9,6 +9,8 @@ import androidx.media3.common.util.UnstableApi
 import com.srisomesh.reelcut.engine.ClipScanner
 import com.srisomesh.reelcut.engine.MediaInfo
 import com.srisomesh.reelcut.engine.Plan
+import com.srisomesh.reelcut.engine.Project
+import com.srisomesh.reelcut.engine.ProjectStore
 import com.srisomesh.reelcut.engine.ReelEngine
 import com.srisomesh.reelcut.engine.ReelSession
 import com.srisomesh.reelcut.engine.Shot
@@ -36,6 +38,8 @@ sealed interface Screen {
         val exported: File? = null,
     ) : Screen
     data class Viewer(val item: Library.Item) : Screen
+    /** Timeline editor with project [id] open. */
+    data class Editor(val id: String) : Screen
     /** Fine-tune: the shots being edited (not yet applied), the selected one, and the result to go back to. */
     data class FineTune(
         val shots: List<Shot>,
@@ -250,6 +254,46 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
         rerender()
     }
 
+    // ------------------------------------------------------- timeline projects ---
+
+    val projects = MutableStateFlow(ProjectStore.list(app))
+
+    fun refreshLists() {
+        projects.value = ProjectStore.list(app)
+        recent.value = Library.list(app)
+    }
+
+    /** Home -> New project: the picked clips become a new project, opened in the editor. */
+    fun newProject(uris: List<Uri>) {
+        viewModelScope.launch {
+            val clips = withContext(Dispatchers.IO) { ProjectStore.probe(app, uris) }
+            if (clips.isEmpty()) { say("These files could not be read"); return@launch }
+            val p = ProjectStore.newProject(app, clips)
+            withContext(Dispatchers.IO) { ProjectStore.save(app, p) }
+            projects.value = ProjectStore.list(app)
+            screen.value = Screen.Editor(p.id)
+            if (clips.size < uris.size) say("${uris.size - clips.size} file(s) could not be read")
+        }
+    }
+
+    fun openProject(id: String) {
+        if (ProjectStore.load(app, id) == null) { say("This project could not be opened"); return }
+        screen.value = Screen.Editor(id)
+    }
+
+    fun renameProject(p: Project, name: String) {
+        val clean = name.trim().take(40)
+        if (clean.isEmpty()) return
+        ProjectStore.save(app, p.copy(name = clean, updated = System.currentTimeMillis()))
+        projects.value = ProjectStore.list(app)
+    }
+
+    fun deleteProject(p: Project) {
+        ProjectStore.delete(app, p.id)
+        projects.value = ProjectStore.list(app)
+        say("Project deleted")
+    }
+
     fun open(item: Library.Item) { screen.value = Screen.Viewer(item) }
 
     fun delete(item: Library.Item) {
@@ -263,6 +307,7 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
         when (screen.value) {
             is Screen.Working, is Screen.Result -> { job?.cancel(); screen.value = Screen.Home }
             is Screen.Viewer -> screen.value = Screen.Home
+            is Screen.Editor -> { screen.value = Screen.Home; refreshLists() }
             is Screen.FineTune -> {
                 val ft = screen.value as Screen.FineTune
                 screen.value = ft.back

@@ -8,6 +8,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material3.OutlinedTextField
+import com.srisomesh.reelcut.EditorViewModel
+import com.srisomesh.reelcut.engine.Project
+import com.srisomesh.reelcut.engine.ProjectStore
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -93,11 +99,15 @@ private val CardShape = RoundedCornerShape(14.dp)
 
 @UnstableApi
 @Composable
-fun App(vm: ReelViewModel = viewModel()) {
+fun App(vm: ReelViewModel = viewModel(), evm: EditorViewModel = viewModel(), startProject: String? = null) {
     val screen by vm.screen.collectAsStateWithLifecycle()
     val snack = remember { SnackbarHostState() }
     LaunchedEffect(Unit) { vm.messages.collect { snack.showSnackbar(it) } }
-    BackHandler(enabled = screen !is Screen.Home) { vm.back() }
+    LaunchedEffect(Unit) { evm.messages.collect { snack.showSnackbar(it) } }
+    LaunchedEffect(startProject) { startProject?.let { vm.openProject(it) } }
+    // leaving the editor saves the project first
+    val leave: () -> Unit = { if (screen is Screen.Editor) evm.close { vm.refreshLists() }; vm.back() }
+    BackHandler(enabled = screen !is Screen.Home) { leave() }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snack) },
@@ -110,6 +120,10 @@ fun App(vm: ReelViewModel = viewModel()) {
                 is Screen.Result -> ResultScreen(vm, s)
                 is Screen.Viewer -> ViewerScreen(vm, s.item)
                 is Screen.FineTune -> FineTuneScreen(vm, s)
+                is Screen.Editor -> {
+                    LaunchedEffect(s.id) { evm.open(s.id) }
+                    EditorScreen(evm, onBack = leave)
+                }
             }
         }
     }
@@ -122,7 +136,15 @@ fun App(vm: ReelViewModel = viewModel()) {
 private fun HomeScreen(vm: ReelViewModel) {
     val len by vm.reelLen.collectAsStateWithLifecycle()
     val recent by vm.recent.collectAsStateWithLifecycle()
+    val projects by vm.projects.collectAsStateWithLifecycle()
     var showAbout by remember { mutableStateOf(false) }
+    var projectMenu by remember { mutableStateOf<Project?>(null) }
+    val projectPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(20)) { uris ->
+        if (uris.isNotEmpty()) vm.newProject(uris)
+    }
+    // projects and exported reels together, newest first
+    val entries: List<Any> = (projects.map { it to it.updated } + recent.map { it to it.file.lastModified() })
+        .sortedByDescending { it.second }.map { it.first }
 
     val songPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.start(uri) else vm.say("Pick a song to continue")
@@ -179,7 +201,7 @@ private fun HomeScreen(vm: ReelViewModel) {
         // New project card (timeline editor = phase 2)
         Row(
             Modifier.fillMaxWidth().clip(CardShape).background(MaterialTheme.colorScheme.surfaceVariant)
-                .clickable { vm.say("The timeline editor comes in phase 2") }.padding(14.dp),
+                .clickable { projectPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -191,19 +213,45 @@ private fun HomeScreen(vm: ReelViewModel) {
         }
 
         Text("Recent projects", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (recent.isEmpty()) {
+        if (entries.isEmpty()) {
             Text(
-                "Your reels show here after you export them.",
+                "Your projects and exported reels show here.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            recent.chunked(3).forEach { row ->
+            entries.chunked(3).forEach { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    row.forEach { item -> RecentTile(item, Modifier.weight(1f)) { vm.open(item) } }
+                    row.forEach { e ->
+                        when (e) {
+                            is Project -> ProjectTile(e, Modifier.weight(1f), onClick = { vm.openProject(e.id) }, onLongClick = { projectMenu = e })
+                            is Library.Item -> RecentTile(e, Modifier.weight(1f)) { vm.open(e) }
+                        }
+                    }
                     repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
         }
+    }
+
+    projectMenu?.let { pr ->
+        var name by remember(pr.id) { mutableStateOf(pr.name) }
+        var confirmDelete by remember(pr.id) { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { projectMenu = null },
+            title = { Text(if (confirmDelete) "Delete this project?" else "Project") },
+            text = {
+                if (confirmDelete) Text("${pr.name} will be removed from ReelCut. Your clips and exported videos stay in the gallery.")
+                else OutlinedTextField(value = name, onValueChange = { name = it.take(40) }, singleLine = true, label = { Text("Name") })
+            },
+            confirmButton = {
+                if (confirmDelete) TextButton(onClick = { vm.deleteProject(pr); projectMenu = null }) { Text("Delete") }
+                else TextButton(onClick = { vm.renameProject(pr, name); projectMenu = null }) { Text("Save name") }
+            },
+            dismissButton = {
+                if (confirmDelete) TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+                else TextButton(onClick = { confirmDelete = true }) { Text("Delete project") }
+            },
+        )
     }
 
     if (showAbout) {
@@ -221,6 +269,30 @@ private fun chipColors() = FilterChipDefaults.filterChipColors(
     selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
     selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
 )
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ProjectTile(p: Project, modifier: Modifier, onClick: () -> Unit, onLongClick: () -> Unit) {
+    val ctx = LocalContext.current
+    val bmp by produceState<ImageBitmap?>(null, p.id, p.updated) {
+        value = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(ProjectStore.cover(ctx, p.id).path)?.asImageBitmap() }
+    }
+    Box(
+        modifier.aspectRatio(9f / 16f).clip(RoundedCornerShape(10.dp)).background(Color(0xFF26215C))
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+    ) {
+        bmp?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+        Icon(
+            Icons.Filled.Edit, "Project", tint = Color.White,
+            modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(22.dp).clip(RoundedCornerShape(6.dp))
+                .background(Color(0x99000000)).padding(3.dp),
+        )
+        Text(
+            p.name, color = Color.White, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color(0x99000000)).padding(6.dp),
+        )
+    }
+}
 
 @Composable
 private fun RecentTile(item: Library.Item, modifier: Modifier, onClick: () -> Unit) {
@@ -353,7 +425,7 @@ private fun VideoPlayer(file: File, modifier: Modifier) {
     )
 }
 
-private fun share(ctx: Context, file: File) {
+internal fun share(ctx: Context, file: File) {
     val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", file)
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "video/mp4"

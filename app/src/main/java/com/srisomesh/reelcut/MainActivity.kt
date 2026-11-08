@@ -13,6 +13,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { ReelCutTheme { App() } }
+        // "open_project" opens a saved timeline project directly (used by the emulator test)
+        val startProject = intent?.getStringExtra("open_project")
+        setContent { ReelCutTheme { App(startProject = startProject) } }
     }
 }

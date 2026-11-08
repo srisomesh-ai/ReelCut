@@ -46,8 +46,16 @@ object Renderer {
         width: Int,
         height: Int,
         onProgress: (Float) -> Unit,
+    ) = export(context, buildComposition(a, style, shots, songUri, width, height), out, width, onProgress)
+
+    /** Encodes any composition to an MP4 (auto reels and timeline projects). */
+    suspend fun export(
+        context: Context,
+        composition: Composition,
+        out: File,
+        width: Int,
+        onProgress: (Float) -> Unit,
     ) = withContext(Dispatchers.Main) {
-        val composition = buildComposition(a, style, shots, songUri, width, height)
         out.parentFile?.mkdirs()
         if (out.exists()) out.delete()
         val bitrate = if (width >= 1080) 14_000_000 else 6_000_000
