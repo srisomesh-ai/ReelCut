@@ -36,7 +36,8 @@ object TimelineComposer {
                             .build()
                     )
                     .build()
-                EditedMediaItem.Builder(mi).setEffects(effects).build()
+                // the preview player needs the whole source length to place the clipped part
+                EditedMediaItem.Builder(mi).setDurationUs((c.srcDur * 1_000_000).roundToLong()).setEffects(effects).build()
             }
         }
         // photos (and silent videos) get silence so the clips' own sound stays in step
