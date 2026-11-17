@@ -17,6 +17,7 @@ import com.srisomesh.reelcut.engine.ProjectStore
 import com.srisomesh.reelcut.engine.Pace
 import com.srisomesh.reelcut.engine.Shape
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -363,13 +364,7 @@ private fun SetupScreen(vm: ReelViewModel, s: Screen.Setup) {
         }
         SetupTile("Cut speed") {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Pace.entries.forEach { p ->
-                    FilterChip(
-                        selected = o.pace == p, onClick = { vm.setPace(p) }, shape = RoundedCornerShape(50), colors = chipColors(),
-                        label = { Text(p.label, maxLines = 1, softWrap = false, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
+                Pace.entries.forEach { p -> Pill(p.label, o.pace == p, Modifier.weight(1f)) { vm.setPace(p) } }
             }
             Text(
                 when (o.pace) {
@@ -390,6 +385,23 @@ private fun SetupScreen(vm: ReelViewModel, s: Screen.Setup) {
         Button(onClick = { vm.start() }, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(12.dp)) {
             Text("Make reel")
         }
+    }
+}
+
+/** An equal-width choice button (same colours as the chips), so four fit on a phone. */
+@Composable
+private fun Pill(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Box(
+        modifier.height(34.dp).clip(RoundedCornerShape(50))
+            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+            .border(1.dp, if (selected) Color.Transparent else MaterialTheme.colorScheme.outline, RoundedCornerShape(50))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelLarge,
+            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
