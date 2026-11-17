@@ -16,6 +16,7 @@ import com.srisomesh.reelcut.engine.Project
 import com.srisomesh.reelcut.engine.ProjectStore
 import com.srisomesh.reelcut.engine.Pace
 import com.srisomesh.reelcut.engine.Shape
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -361,9 +362,13 @@ private fun SetupScreen(vm: ReelViewModel, s: Screen.Setup) {
             }
         }
         SetupTile("Cut speed") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Pace.entries.forEach { p ->
-                    FilterChip(selected = o.pace == p, onClick = { vm.setPace(p) }, label = { Text(p.label) }, shape = RoundedCornerShape(50), colors = chipColors())
+                    FilterChip(
+                        selected = o.pace == p, onClick = { vm.setPace(p) }, shape = RoundedCornerShape(50), colors = chipColors(),
+                        label = { Text(p.label, maxLines = 1, softWrap = false, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) },
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
             Text(
