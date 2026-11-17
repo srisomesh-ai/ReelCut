@@ -23,6 +23,8 @@ adb exec-out screencap -p > emu-out/editor.png
 set +x
 command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null; }
 echo "==REPORT"; cat emu-out/report.txt emu-out/timeline.txt
+# brightness of every frame of the smooth reel (black frames show as low values)
+echo "==YAVG reel_2 $(ffmpeg -v error -i emu-out/reel_2.mp4 -vf "signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" -f null - 2>/dev/null | grep -o 'YAVG=[0-9.]*' | cut -d= -f2 | awk '{printf "%d ", $1}')"
 for f in emu-out/reel_*.mp4 emu-out/timeline.mp4; do
   echo "==INFO $f"; cat "${f%.mp4}.txt" 2>/dev/null
   ffprobe -v error -show_entries stream=codec_type,codec_name,width,height,avg_frame_rate:format=duration -of compact "$f"
