@@ -105,7 +105,7 @@ class LookShaderProgram(private val fx: ShotFx, useHdr: Boolean) : BaseGlShaderP
         var seed = 0f
         if (isTail) {
             // zoom-through: the old shot grows as the new one fades in over it
-            if (fx.zoomTail) zoom += st.zoomAmt * ease((elapsed / st.zoomLen).coerceIn(0.0, 1.0))
+            if (fx.zoomTail) zoom += st.zoomAmt * ease(((t - fx.dur) / st.zoomLen).coerceIn(0.0, 1.0))   // from the cut on
         } else when (sh.trans) {
             Trans.WHIP -> if (t < 0.18) { val e = 1 - ease(t / 0.18); offX += 0.9 * e; blur = 0.012 * e }
             Trans.GLITCH -> if (t < 0.16) { glitch = 1f; seed = (fx.index * 977 + floor(t * 60).toInt()).toFloat() }

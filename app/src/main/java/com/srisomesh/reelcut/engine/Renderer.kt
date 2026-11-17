@@ -168,14 +168,16 @@ object Renderer {
                 val len = ((if (shots[k].trans == Trans.FADE) style.fadeLen else style.zoomLen) * 1000).roundToLong()
                     .coerceAtMost(durs[k] - 100).coerceAtLeast(100)
                 fadeMs[k] = len
-                filler(gap); gap = 0
+                // the carry-on starts a little before the cut, so the two layers never meet on the black filler
+                val pre = minOf(150L, gap - 34).coerceAtLeast(0)
+                filler(gap - pre); gap = 0
                 val prev = shots[k - 1]
                 val m = prev.media!!
-                var from = (prev.src0 * 1000).roundToLong() + durs[k - 1]
-                if (!m.isImage && from + len > (m.dur * 1000).toLong() - 40) from = ((m.dur * 1000).toLong() - 40 - len).coerceAtLeast(0)
+                var from = (prev.src0 * 1000).roundToLong() + durs[k - 1] - pre
+                if (!m.isImage && from + pre + len > (m.dur * 1000).toLong() - 40) from = ((m.dur * 1000).toLong() - 40 - len - pre).coerceAtLeast(0)
                 val fx = ShotFx(style, prev, m.isImage, durs[k - 1] / 1000.0, hitsFor(k - 1), false,
-                    tOffset = durs[k - 1] / 1000.0, zoomTail = shots[k].trans == Trans.ZOOM, index = k - 1)
-                lower.add(piece(k - 1, from, len, fx))
+                    tOffset = (durs[k - 1] - pre) / 1000.0, zoomTail = shots[k].trans == Trans.ZOOM, index = k - 1)
+                lower.add(piece(k - 1, from, pre + len, fx))
                 gap += durs[k] - len
             }
             filler(gap)
