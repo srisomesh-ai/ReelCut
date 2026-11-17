@@ -89,5 +89,21 @@ class FineTuneUiTest {
         assertEquals("left edge moves the clip start", newStart, ft3.shots[sel].src0, 0.001)
         assertEquals("reel keeps its length", before.last().t1, ft3.shots.last().t1, 0.001)
         inst.runOnMainSync { vm.toggleMute() }   // leave sound on for the next run
+
+        // setup screen (shape, cut speed, title) after picking clips + song
+        inst.runOnMainSync {
+            vm.setMedia(media)
+            vm.songPicked(Uri.fromFile(File(inDir, "song_fast.mp3")))
+            vm.setTitle("Wedding Day")
+        }
+        rule.waitForIdle()
+        rule.onNodeWithText("Cut speed").assertExists()
+        rule.onNodeWithText("Smooth").performClick()
+        rule.waitForIdle()
+        assertEquals(com.srisomesh.reelcut.engine.Pace.SMOOTH, vm.options.value.pace)
+        File(out, "setup.png").outputStream().use {
+            rule.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
+        }
+        inst.runOnMainSync { vm.setPace(com.srisomesh.reelcut.engine.Pace.AUTO) }
     }
 }

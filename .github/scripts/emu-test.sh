@@ -30,6 +30,7 @@ for f in emu-out/reel_*.mp4 emu-out/timeline.mp4; do
   ffmpeg -v error -y -i "$f" -vf "fps=2,scale=96:-1,tile=10x3" -frames:v 1 -q:v 6 "$f.jpg"
   echo "==B64 $f $(base64 -w0 "$f.jpg")"
 done
+[ -f emu-out/setup.png ] && ffmpeg -v error -y -i emu-out/setup.png -vf "scale=360:-1" -q:v 6 emu-out/setup.jpg && echo "==B64 setup $(base64 -w0 emu-out/setup.jpg)"
 [ -f emu-out/finetune.png ] && ffmpeg -v error -y -i emu-out/finetune.png -vf "scale=360:-1" -q:v 6 emu-out/finetune.jpg && echo "==B64 finetune $(base64 -w0 emu-out/finetune.jpg)"
 [ -f emu-out/editor.png ] && ffmpeg -v error -y -i emu-out/editor.png -vf "scale=360:-1" -q:v 6 emu-out/editor.jpg && echo "==B64 editor $(base64 -w0 emu-out/editor.jpg)"
 ffmpeg -v error -y -i emu-out/home.png -vf "scale=360:-1" -q:v 6 emu-out/home.jpg && echo "==B64 home $(base64 -w0 emu-out/home.jpg)"

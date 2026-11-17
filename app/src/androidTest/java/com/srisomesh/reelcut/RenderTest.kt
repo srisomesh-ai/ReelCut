@@ -9,6 +9,10 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.srisomesh.reelcut.engine.ReelEngine
 import com.srisomesh.reelcut.engine.Plan
 import com.srisomesh.reelcut.engine.ShotEdits
+import com.srisomesh.reelcut.engine.Pace
+import com.srisomesh.reelcut.engine.ReelOptions
+import com.srisomesh.reelcut.engine.Shape
+import com.srisomesh.reelcut.engine.Trans
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -35,20 +39,29 @@ class RenderTest {
         val media = names.filter { it.endsWith(".mp4") || it.endsWith(".jpg") }.sorted().map { Uri.fromFile(File(inDir, it)) }
         val report = StringBuilder()
 
+        data class Run(
+            val song: String, val len: Double, val look: String?,
+            val opts: ReelOptions = ReelOptions(), val edited: Boolean = false,
+        )
         val runs = listOf(
-            Triple("song_fast.mp3", 15.0, null as String?),
-            Triple("song_slow.m4a", 15.0, null as String?),
-            Triple("song_fast.mp3", 10.0, "mono"),
-            Triple("song_fast.mp3", 15.0, "edited"),   // fine-tuned by hand: +1 beat, -1 beat, one shot removed, moment moved
+            Run("song_fast.mp3", 15.0, null),
+            Run("song_slow.m4a", 15.0, null, ReelOptions(title = "Wedding Day")),          // auto speed: slow song -> dissolves
+            Run("song_fast.mp3", 10.0, "mono"),
+            Run("song_fast.mp3", 15.0, null, edited = true),   // fine-tuned by hand: +1 beat, -1 beat, one shot removed, moment moved
+            Run("song_fast.mp3", 15.0, "vhs", ReelOptions(Pace.FAST, title = "DJ Night")),  // TV lines, PLAY stamp, glitch cuts
+            Run("song_slow.m4a", 15.0, "vintage", ReelOptions(Pace.SMOOTH, Shape.SQUARE)), // grain, light leak, 1:1
+            Run("song_fast.mp3", 15.0, "sunset", ReelOptions(Pace.NORMAL, Shape.WIDE)),    // colour wash, 16:9
         )
         for ((i, run) in runs.withIndex()) {
-            val (songName, len, look) = run
+            val songName = run.song
+            val len = run.len
+            val look = run.look
             val t0 = System.currentTimeMillis()
             val session = ReelEngine.prepare(ctx, media, Uri.fromFile(File(inDir, songName)), len) { s, p -> Log.i("RCTEST", "$s $p") }
             val t1 = System.currentTimeMillis()
             val out = File(outDir, "reel_${i + 1}.mp4")
-            var plan = ReelEngine.plan(session, 0, if (look == "edited") null else look)
-            if (look == "edited") {
+            var plan = ReelEngine.plan(session, 0, look, run.opts)
+            if (run.edited) {
                 var sh = plan.shots
                 sh = ShotEdits.changeLength(sh, plan.grid, 1, 1) ?: error("+1 beat failed")
                 sh = ShotEdits.changeLength(sh, plan.grid, 4, -1) ?: error("-1 beat failed")
@@ -57,14 +70,17 @@ class RenderTest {
                 plan = Plan(plan.style, sh, plan.grid)
             }
             val lens = plan.shots.map { it.t1 - it.t0 }
-            val res = ReelEngine.render(ctx, session, plan, 720, 1280, out) { _, _ -> }
+            val res = ReelEngine.render(ctx, session, plan, run.opts.shape.pw, run.opts.shape.ph, out, run.opts.title) { _, _ -> }
             val t2 = System.currentTimeMillis()
             val mmr = MediaMetadataRetriever()
             mmr.setDataSource(out.path)
             val durMs = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0
             mmr.release()
             val a = session.analysis
-            val line = "reel_${i + 1}: song=$songName len=$len look=${res.style.look.name} energetic=${res.style.energetic} " +
+            val fades = plan.shots.count { it.trans == Trans.FADE || it.trans == Trans.ZOOM }
+            val line = "reel_${i + 1}: song=$songName len=$len look=${res.style.look.name} pace=${res.style.pace} shape=${run.opts.shape.label} " +
+                "title=${run.opts.title.ifEmpty { "-" }} dissolves=$fades glitches=${plan.shots.count { it.trans == Trans.GLITCH }} punch=${"%.1f".format(session.analysis.punch)} " +
+                "energetic=${res.style.energetic} " +
                 "bpm=${"%.1f".format(a.bpm)} beatStrength=${"%.2f".format(a.beatStrength)} brightness=${"%.3f".format(a.brightness)} " +
                 "bass=${"%.3f".format(a.bass)} start=${"%.2f".format(a.start)} reelLen=${"%.2f".format(a.len)} " +
                 "beats=${a.rel.joinToString(",") { "%.2f".format(it) }} shots=${res.shots} " +

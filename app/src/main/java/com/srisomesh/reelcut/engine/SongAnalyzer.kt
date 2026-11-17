@@ -29,6 +29,7 @@ class SongAnalysis(
     val beatStrength: Double,
     val seed: Int,
     val songDur: Double,
+    val punch: Double = 15.0,   // how much the low end rises in short bursts (kick drums) vs held bass / strings
 )
 
 /** Beat tracking (Ellis 2007 dynamic programming) and song character, ported from BeatReel. */
@@ -79,6 +80,10 @@ object SongAnalyzer {
         val brightness = rH.average() / mF
         val bass = rL.average() / mF
         val beatStrength = bf.map { o[it] }.average() / (o.average() + 1e-9)
+        // punch (web page): rises of the low end over 2 frames, against its level
+        var rise = 0.0
+        for (i in 2 until rL.size) rise += maxOf(0.0, (rL[i] - rL[i - 2]).toDouble())
+        val punch = rise / (rL.average() + 1e-9) / rL.size * 100
 
         // most exciting window of the reel length, starting on a beat
         var bestI = 0
@@ -123,7 +128,7 @@ object SongAnalyzer {
         var i = 0
         while (i < x.size) { seed = seed * 31 + (x[i] * 1e4f).roundToInt(); i += 997 }
 
-        return SongAnalysis(start, len, rel, en, hitsN, bpm, brightness, bass, beatStrength, seed, songDur)
+        return SongAnalysis(start, len, rel, en, hitsN, bpm, brightness, bass, beatStrength, seed, songDur, punch)
     }
 
     private fun biquad(x: FloatArray, lowpass: Boolean, freq: Double): FloatArray {

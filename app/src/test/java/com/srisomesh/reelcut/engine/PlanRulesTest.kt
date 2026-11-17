@@ -25,24 +25,52 @@ class PlanRulesTest {
                 for (strength in listOf(1.0, 11.0)) add(song(bpm, len, strength, (bpm * len).toInt() + strength.toInt()))
     }
 
+    // every song at every cut speed (fast / normal / smooth) and at the automatic one
     private fun plans() = songs.flatMap { a ->
-        (0 until 4).map { v ->
-            val r = Random(a.seed + v * 7919)
-            val st = Styles.choose(a, r, null)
-            Triple(a, st, Styles.planShots(a, st, r))
+        listOf(Pace.AUTO, Pace.FAST, Pace.NORMAL, Pace.SMOOTH).flatMap { pace ->
+            (0 until 3).map { v ->
+                val r = Random(a.seed + v * 7919)
+                val st = Styles.choose(a, r, null, pace, 6)
+                Triple(a, st, Styles.planShots(a, st, r))
+            }
         }
     }
 
     @Test
     fun shotsStayBetweenMinAndMax() {
         val frame = 1 / 30.0 + 1e-6
-        for ((a, _, shots) in plans()) {
+        for ((a, st, shots) in plans()) {
             for (s in shots) {
                 val d = s.t1 - s.t0
-                assertTrue("bpm ${a.bpm}: shot ${"%.2f".format(d)}s shorter than min", d >= Styles.MIN_SHOT - frame)
-                assertTrue("bpm ${a.bpm}: shot ${"%.2f".format(d)}s longer than max", d <= Styles.MAX_SHOT + frame)
+                assertTrue("bpm ${a.bpm} ${st.pace}: shot ${"%.2f".format(d)}s shorter than ${st.minShot}", d >= st.minShot - frame)
+                assertTrue("bpm ${a.bpm} ${st.pace}: shot ${"%.2f".format(d)}s longer than ${st.maxShot}", d <= st.maxShot + frame)
             }
+            if (st.pace == Pace.FAST) assertTrue(st.minShot == Styles.MIN_SHOT && st.maxShot == Styles.MAX_SHOT)
         }
+    }
+
+    @Test
+    fun smoothIsSlowAndSoft() {
+        for ((a, st, shots) in plans().filter { it.second.pace == Pace.SMOOTH }) {
+            val avg = shots.sumOf { it.t1 - it.t0 } / shots.size
+            assertTrue("bpm ${a.bpm}: smooth shots average ${"%.2f".format(avg)}s", avg >= 2.0)
+            assertTrue("smooth has only dissolves / zooms", shots.drop(1).all { it.trans == Trans.FADE || it.trans == Trans.ZOOM })
+            assertTrue("no punch-ins at smooth speed", shots.none { it.punch })
+        }
+    }
+
+    @Test
+    fun autoPaceFollowsTheSong() {
+        val soft = song(70.0, 15.0, 11.0, 1)                     // slow, dark -> smooth
+        assertEquals(Pace.SMOOTH, Styles.songPace(soft))
+        val dance = SongAnalysis(0.0, 15.0, soft.rel, soft.energy, emptyList(), 128.0, 0.2, 0.6, 11.0, 1, 200.0, 18.0)
+        assertEquals(Pace.FAST, Styles.songPace(dance))
+        val mid = SongAnalysis(0.0, 15.0, soft.rel, soft.energy, emptyList(), 105.0, 0.13, 0.6, 11.0, 1, 200.0, 15.0)
+        assertEquals(Pace.NORMAL, Styles.songPace(mid))
+        // a calm track heard at 172 BPM is felt as 86 -> smooth
+        val calm = SongAnalysis(0.0, 15.0, soft.rel, soft.energy, emptyList(), 172.0, 0.10, 0.6, 11.0, 1, 200.0, 15.0)
+        assertEquals(Pace.SMOOTH, Styles.songPace(calm))
+        assertEquals(13, Looks.all.size)
     }
 
     @Test

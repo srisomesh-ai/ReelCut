@@ -9,7 +9,12 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.util.Size
+import androidx.media3.effect.OverlayEffect
+import androidx.media3.effect.OverlaySettings
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.TextureOverlay
+import androidx.media3.effect.VideoCompositorSettings
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
@@ -45,8 +50,9 @@ object Renderer {
         out: File,
         width: Int,
         height: Int,
+        title: String = "",
         onProgress: (Float) -> Unit,
-    ) = export(context, buildComposition(a, style, shots, songUri, width, height), out, width, onProgress)
+    ) = export(context, buildComposition(context, a, style, shots, songUri, width, height, title), out, width, onProgress)
 
     /** Encodes any composition to an MP4 (auto reels and timeline projects). */
     suspend fun export(
@@ -101,7 +107,9 @@ object Renderer {
         }
     }
 
-    private fun buildComposition(a: SongAnalysis, style: Style, shots: List<Shot>, songUri: Uri, width: Int, height: Int): Composition {
+    private fun buildComposition(
+        context: Context, a: SongAnalysis, style: Style, shots: List<Shot>, songUri: Uri, width: Int, height: Int, title: String,
+    ): Composition {
         // Shot lengths in ms. A clip shorter than its shot gives the rest to the next shot, so cuts stay on time.
         val durs = LongArray(shots.size) { ((shots[it].t1 - shots[it].t0) * 1000).roundToLong() }
         for (i in shots.indices) {
@@ -114,35 +122,65 @@ object Renderer {
                 if (i + 1 < durs.size) durs[i + 1] += short
             }
         }
-        val items = shots.mapIndexed { i, sh ->
-            val m = sh.media!!
-            val durMs = durs[i]
-            val hits = a.hits.filter { it.t >= sh.t0 - 0.3 && it.t < sh.t0 + durMs / 1000.0 }.map { Hit(it.t - sh.t0, it.s) }
-            val fx = ShotFx(style, sh, m.isImage, durMs / 1000.0, hits, fadeOutAtEnd = i == shots.size - 1)
-            val effects = Effects(
-                emptyList<AudioProcessor>(),
-                listOf<Effect>(
-                    Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP),
-                    LookEffect(fx),
-                )
-            )
-            if (m.isImage) {
-                val mi = MediaItem.Builder().setUri(m.uri).setImageDurationMs(durMs).build()
+        val startsMs = LongArray(shots.size).also { for (i in 1 until shots.size) it[i] = it[i - 1] + durs[i - 1] }
+        val present = Presentation.createForWidthAndHeight(width, height, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP)
+        fun hitsFor(i: Int) = a.hits.filter { it.t >= shots[i].t0 - 0.3 && it.t < shots[i].t0 + durs[i] / 1000.0 }.map { Hit(it.t - shots[i].t0, it.s) }
+
+        /** One piece of a clip: [fromMs]..+[lenMs] of shot i's media, drawn by [fx]. */
+        fun piece(i: Int, fromMs: Long, lenMs: Long, fx: ShotFx): EditedMediaItem {
+            val m = shots[i].media!!
+            val effects = Effects(emptyList<AudioProcessor>(), listOf<Effect>(present, LookEffect(fx)))
+            return if (m.isImage) {
+                val mi = MediaItem.Builder().setUri(m.uri).setImageDurationMs(lenMs).build()
                 EditedMediaItem.Builder(mi).setFrameRate(30).setEffects(effects).build()
             } else {
-                val startMs = (sh.src0 * 1000).roundToLong()
                 val mi = MediaItem.Builder()
                     .setUri(m.uri)
                     .setClippingConfiguration(
-                        MediaItem.ClippingConfiguration.Builder()
-                            .setStartPositionMs(startMs)
-                            .setEndPositionMs(startMs + durMs)
-                            .build()
+                        MediaItem.ClippingConfiguration.Builder().setStartPositionMs(fromMs).setEndPositionMs(fromMs + lenMs).build()
                     )
                     .build()
                 EditedMediaItem.Builder(mi).setRemoveAudio(true).setEffects(effects).build()
             }
         }
+
+        // top layer: every shot in order
+        val items = shots.mapIndexed { i, sh ->
+            piece(i, (sh.src0 * 1000).roundToLong(), durs[i], ShotFx(style, sh, sh.media!!.isImage, durs[i] / 1000.0, hitsFor(i), i == shots.size - 1, index = i))
+        }
+
+        // lower layer (only when there are dissolves / zoom-throughs): under each such cut the previous shot carries on
+        // while the new one fades in on top; elsewhere a black picture that is never seen
+        val blend = { k: Int -> shots[k].trans == Trans.FADE || shots[k].trans == Trans.ZOOM }
+        val layered = shots.indices.drop(1).any(blend)
+        val fadeMs = LongArray(shots.size)
+        val lower = ArrayList<EditedMediaItem>()
+        if (layered) {
+            val black = blackPicture(context)
+            fun filler(ms: Long) {
+                if (ms <= 0) return
+                val mi = MediaItem.Builder().setUri(Uri.fromFile(black)).setImageDurationMs(ms).build()
+                lower.add(EditedMediaItem.Builder(mi).setFrameRate(30).setEffects(Effects(emptyList<AudioProcessor>(), listOf<Effect>(present))).build())
+            }
+            var gap = 0L
+            for (k in shots.indices) {
+                if (k == 0 || !blend(k)) { gap += durs[k]; continue }
+                val len = ((if (shots[k].trans == Trans.FADE) style.fadeLen else style.zoomLen) * 1000).roundToLong()
+                    .coerceAtMost(durs[k] - 100).coerceAtLeast(100)
+                fadeMs[k] = len
+                filler(gap); gap = 0
+                val prev = shots[k - 1]
+                val m = prev.media!!
+                var from = (prev.src0 * 1000).roundToLong() + durs[k - 1]
+                if (!m.isImage && from + len > (m.dur * 1000).toLong() - 40) from = ((m.dur * 1000).toLong() - 40 - len).coerceAtLeast(0)
+                val fx = ShotFx(style, prev, m.isImage, durs[k - 1] / 1000.0, hitsFor(k - 1), false,
+                    tOffset = durs[k - 1] / 1000.0, zoomTail = shots[k].trans == Trans.ZOOM, index = k - 1)
+                lower.add(piece(k - 1, from, len, fx))
+                gap += durs[k] - len
+            }
+            filler(gap)
+        }
+
         val totalMs = durs.sum()
         val songStart = (a.start * 1000).roundToLong()
         val song = MediaItem.Builder()
@@ -158,8 +196,55 @@ object Renderer {
             .setRemoveVideo(true)
             .setEffects(Effects(listOf<AudioProcessor>(FadeAudioProcessor(totalMs * 1000)), emptyList()))
             .build()
-        return Composition.Builder(
+
+        // over the whole reel: the look, then title / VHS stamp, then the fade to black at the end
+        val total = totalMs / 1000.0
+        val flashAt = shots.indices.filter { shots[it].trans == Trans.FLASH }.map { startsMs[it] / 1000.0 }
+        val finish = ArrayList<Effect>()
+        finish.add(FinishEffect(style.look, flashAt, total))
+        val overlays = ArrayList<TextureOverlay>()
+        if (style.look.stamp) overlays.add(ReelOverlays.stamp(width, height))
+        if (title.isNotBlank()) overlays.add(ReelOverlays.title(title, style.look, width, height))
+        if (overlays.isNotEmpty()) finish.add(OverlayEffect(overlays))
+        finish.add(FinishEffect(style.look, emptyList(), total, endFadeOnly = true))
+
+        val sequences = if (layered) {
+            listOf(EditedMediaItemSequence(items), EditedMediaItemSequence(lower), EditedMediaItemSequence(listOf(songItem)))
+        } else {
             listOf(EditedMediaItemSequence(items), EditedMediaItemSequence(listOf(songItem)))
-        ).build()
+        }
+        val builder = Composition.Builder(sequences).setEffects(Effects(emptyList<AudioProcessor>(), finish))
+        if (layered) builder.setVideoCompositorSettings(DissolveSettings(startsMs, fadeMs))
+        return builder.build()
+    }
+
+    /** The top layer (input 0) fades in over the lower one during each dissolve / zoom-through. */
+    private class DissolveSettings(private val startsMs: LongArray, private val fadeMs: LongArray) : VideoCompositorSettings {
+        private var firstUs = Long.MIN_VALUE
+        override fun getOutputSize(inputSizes: List<Size>): Size = inputSizes[0]
+        override fun getOverlaySettings(inputId: Int, presentationTimeUs: Long): OverlaySettings {
+            if (firstUs == Long.MIN_VALUE) firstUs = presentationTimeUs
+            if (inputId != 0) return OverlaySettings.Builder().build()
+            val tMs = (presentationTimeUs - firstUs) / 1000.0
+            var alpha = 1.0
+            for (k in startsMs.indices) {
+                val f = fadeMs[k]
+                if (f <= 0) continue
+                val local = tMs - startsMs[k]
+                if (local >= 0 && local < f) { alpha = ease(local / f); break }
+            }
+            return OverlaySettings.Builder().setAlphaScale(alpha.toFloat()).build()
+        }
+    }
+
+    /** A small black picture for the parts of the lower layer that are never seen. */
+    private fun blackPicture(context: Context): File {
+        val f = File(context.cacheDir, "rc_black.png")
+        if (!f.exists()) {
+            val b = android.graphics.Bitmap.createBitmap(64, 64, android.graphics.Bitmap.Config.ARGB_8888)
+            b.eraseColor(android.graphics.Color.BLACK)
+            f.outputStream().use { b.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        }
+        return f
     }
 }

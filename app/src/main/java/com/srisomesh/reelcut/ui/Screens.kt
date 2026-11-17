@@ -14,6 +14,8 @@ import androidx.compose.material3.OutlinedTextField
 import com.srisomesh.reelcut.EditorViewModel
 import com.srisomesh.reelcut.engine.Project
 import com.srisomesh.reelcut.engine.ProjectStore
+import com.srisomesh.reelcut.engine.Pace
+import com.srisomesh.reelcut.engine.Shape
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -117,6 +119,7 @@ fun App(vm: ReelViewModel = viewModel(), evm: EditorViewModel = viewModel(), sta
             when (val s = screen) {
                 Screen.Home -> HomeScreen(vm)
                 is Screen.Working -> WorkingScreen(s) { vm.back() }
+                is Screen.Setup -> SetupScreen(vm, s)
                 is Screen.Result -> ResultScreen(vm, s)
                 is Screen.Viewer -> ViewerScreen(vm, s.item)
                 is Screen.FineTune -> FineTuneScreen(vm, s)
@@ -147,7 +150,7 @@ private fun HomeScreen(vm: ReelViewModel) {
         .sortedByDescending { it.second }.map { it.first }
 
     val songPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.start(uri) else vm.say("Pick a song to continue")
+        if (uri != null) vm.songPicked(uri) else vm.say("Pick a song to continue")
     }
     val mediaPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(20)) { uris ->
         when {
@@ -332,13 +335,80 @@ private fun WorkingScreen(s: Screen.Working, onCancel: () -> Unit) {
 // -------------------------------------------------------------- Result ---
 
 @UnstableApi
+/** After picking clips + song: music, shape, cut speed, optional title, then Make reel. */
+@Composable
+private fun SetupScreen(vm: ReelViewModel, s: Screen.Setup) {
+    val o by vm.options.collectAsStateWithLifecycle()
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { vm.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+            Text("Auto reel", style = MaterialTheme.typography.titleMedium)
+        }
+        SetupTile("Music") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = true, onClick = {}, label = { Text("My song") }, shape = RoundedCornerShape(50), colors = chipColors())
+            }
+            Text(s.songName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        SetupTile("Shape") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Shape.entries.forEach { sh ->
+                    FilterChip(selected = o.shape == sh, onClick = { vm.setShape(sh) }, label = { Text(sh.label) }, shape = RoundedCornerShape(50), colors = chipColors())
+                }
+            }
+        }
+        SetupTile("Cut speed") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pace.entries.forEach { p ->
+                    FilterChip(selected = o.pace == p, onClick = { vm.setPace(p) }, label = { Text(p.label) }, shape = RoundedCornerShape(50), colors = chipColors())
+                }
+            }
+            Text(
+                when (o.pace) {
+                    Pace.AUTO -> "Auto: soft songs get slow cuts and dissolves"
+                    Pace.SMOOTH -> "A new shot about every 3-4 s, soft dissolves"
+                    Pace.NORMAL -> "A new shot about every 1.5-2.5 s"
+                    Pace.FAST -> "Cuts on the beat"
+                },
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        SetupTile("Title") {
+            OutlinedTextField(
+                value = o.title, onValueChange = { vm.setTitle(it) }, singleLine = true,
+                placeholder = { Text("Text on the first shot (optional)") }, modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        Button(onClick = { vm.start() }, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(12.dp)) {
+            Text("Make reel")
+        }
+    }
+}
+
+@Composable
+private fun SetupTile(title: String, content: @Composable () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().clip(CardShape).background(MaterialTheme.colorScheme.surfaceVariant).padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(title, style = MaterialTheme.typography.titleSmall)
+        content()
+    }
+}
+
 @Composable
 private fun ResultScreen(vm: ReelViewModel, s: Screen.Result) {
     val ctx = LocalContext.current
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { vm.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-            Text("${s.lookName} · ${s.bpm} BPM", style = MaterialTheme.typography.titleMedium)
+            Text(
+                listOf(s.lookName, "${s.bpm} BPM", s.pace).filter { it.isNotEmpty() }.joinToString(" · "),
+                style = MaterialTheme.typography.titleMedium,
+            )
         }
         VideoPlayer(s.exported ?: s.file, Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp)))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {

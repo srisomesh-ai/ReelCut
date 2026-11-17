@@ -8,6 +8,9 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.util.UnstableApi
 import com.srisomesh.reelcut.engine.ClipScanner
 import com.srisomesh.reelcut.engine.MediaInfo
+import com.srisomesh.reelcut.engine.Pace
+import com.srisomesh.reelcut.engine.ReelOptions
+import com.srisomesh.reelcut.engine.Shape
 import com.srisomesh.reelcut.engine.Plan
 import com.srisomesh.reelcut.engine.Project
 import com.srisomesh.reelcut.engine.ProjectStore
@@ -33,11 +36,14 @@ sealed interface Screen {
         val lookKey: String,
         val lookName: String,
         val bpm: Int,
+        val pace: String = "",
         val exporting: Boolean = false,
         val exportProgress: Float = 0f,
         val exported: File? = null,
     ) : Screen
     data class Viewer(val item: Library.Item) : Screen
+    /** After picking clips + song: music, shape, cut speed, title, then Make reel. */
+    data class Setup(val songName: String) : Screen
     /** Timeline editor with project [id] open. */
     data class Editor(val id: String) : Screen
     /** Fine-tune: the shots being edited (not yet applied), the selected one, and the result to go back to. */
@@ -53,7 +59,34 @@ sealed interface Screen {
 @UnstableApi
 class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
 
+    private val prefs = app.getSharedPreferences("reelcut", android.content.Context.MODE_PRIVATE)
     val screen = MutableStateFlow<Screen>(Screen.Home)
+
+    /** Setup choices; shape and cut speed are remembered, the title is not. */
+    val options = MutableStateFlow(
+        ReelOptions(
+            pace = runCatching { Pace.valueOf(prefs.getString("pace", "AUTO")!!) }.getOrDefault(Pace.AUTO),
+            shape = runCatching { Shape.valueOf(prefs.getString("shape", "PORTRAIT")!!) }.getOrDefault(Shape.PORTRAIT),
+        )
+    )
+    private var pendingSong: Uri? = null
+
+    fun setPace(p: Pace) { options.value = options.value.copy(pace = p); prefs.edit().putString("pace", p.name).apply() }
+    fun setShape(s: Shape) { options.value = options.value.copy(shape = s); prefs.edit().putString("shape", s.name).apply() }
+    fun setTitle(t: String) { options.value = options.value.copy(title = t.take(28)) }
+
+    /** Song picked: show the setup screen. */
+    fun songPicked(song: Uri) {
+        if (pendingMedia.size < 2) { say("Pick at least 2 clips or photos"); return }
+        pendingSong = song
+        options.value = options.value.copy(title = "")
+        val name = runCatching {
+            app.contentResolver.query(song, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        }.getOrNull() ?: "Your song"
+        screen.value = Screen.Setup(name)
+    }
     val reelLen = MutableStateFlow(15)
     val recent = MutableStateFlow(Library.list(app))
     val messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
@@ -81,7 +114,7 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private fun newPlan() {
         val s = session ?: return
-        plan = ReelEngine.plan(s, variation, lookKey)
+        plan = ReelEngine.plan(s, variation, lookKey, options.value)
         edited = false
     }
 
@@ -89,8 +122,10 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun setMedia(uris: List<Uri>) { pendingMedia = uris }
 
-    fun start(song: Uri) {
+    /** Setup -> Make reel. */
+    fun start() {
         val media = pendingMedia
+        val song = pendingSong ?: return
         if (media.size < 2) { say("Pick at least 2 clips or photos"); return }
         variation = 0
         lookKey = null
@@ -122,8 +157,9 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
             app.cacheDir.listFiles { f -> f.name.startsWith("preview_") }?.forEach { it.delete() }
         }
         val out = File(app.cacheDir, "preview_${System.currentTimeMillis()}.mp4")
-        val res = ReelEngine.render(app, s, pl, 720, 1280, out) { st, p -> update(st, p) }
-        screen.value = Screen.Result(out, res.style.look.key, res.style.look.name, s.analysis.bpm.roundToInt())
+        val o = options.value
+        val res = ReelEngine.render(app, s, pl, o.shape.pw, o.shape.ph, out, o.title) { st, p -> update(st, p) }
+        screen.value = Screen.Result(out, res.style.look.key, res.style.look.name, s.analysis.bpm.roundToInt(), res.style.pace.label)
     }
 
     private fun rerender() {
@@ -154,7 +190,8 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
         job = viewModelScope.launch {
             try {
                 val out = Library.newFile(app)
-                ReelEngine.render(app, s, pl, 1080, 1920, out) { _, p ->
+                val o = options.value
+                ReelEngine.render(app, s, pl, o.shape.w, o.shape.h, out, o.title) { _, p ->
                     val cur = screen.value
                     if (cur is Screen.Result && cur.exporting) screen.value = cur.copy(exportProgress = ((p - 0.4f) / 0.6f).coerceIn(0f, 1f))
                 }
@@ -222,7 +259,6 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
     }, "No room to change this shot")
 
     /** Song on/off in the Fine-tune preview (remembered; never affects the exported reel). */
-    private val prefs = app.getSharedPreferences("reelcut", android.content.Context.MODE_PRIVATE)
     val previewMuted = MutableStateFlow(prefs.getBoolean("ft_muted", false))
     fun toggleMute() {
         previewMuted.value = !previewMuted.value
@@ -306,7 +342,7 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
     fun back() {
         when (screen.value) {
             is Screen.Working, is Screen.Result -> { job?.cancel(); screen.value = Screen.Home }
-            is Screen.Viewer -> screen.value = Screen.Home
+            is Screen.Viewer, is Screen.Setup -> screen.value = Screen.Home
             is Screen.Editor -> { screen.value = Screen.Home; refreshLists() }
             is Screen.FineTune -> {
                 val ft = screen.value as Screen.FineTune

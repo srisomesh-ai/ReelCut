@@ -13,6 +13,17 @@ class ReelSession(val song: Uri, val analysis: SongAnalysis, val media: List<Med
 
 class ReelResult(val file: File, val style: Style, val shots: Int)
 
+/** Reel shape: export size and the lighter preview size (multiples of 16 where the web page needed them). */
+enum class Shape(val label: String, val w: Int, val h: Int, val pw: Int, val ph: Int) {
+    PORTRAIT("9:16", 1080, 1920, 720, 1280),
+    FOUR_FIVE("4:5", 1088, 1360, 832, 1040),
+    SQUARE("1:1", 1088, 1088, 960, 960),
+    WIDE("16:9", 1920, 1080, 1280, 720),
+}
+
+/** Choices from the setup screen. */
+data class ReelOptions(val pace: Pace = Pace.AUTO, val shape: Shape = Shape.PORTRAIT, val title: String = "")
+
 @UnstableApi
 object ReelEngine {
 
@@ -35,9 +46,9 @@ object ReelEngine {
     }
 
     /** Same session + variation + look always gives the same plan, so the export matches the preview. */
-    fun plan(session: ReelSession, variation: Int, forcedLook: String?): Plan {
+    fun plan(session: ReelSession, variation: Int, forcedLook: String?, opts: ReelOptions = ReelOptions()): Plan {
         val r = Random(session.analysis.seed + variation * 7919)
-        val style = Styles.choose(session.analysis, r, forcedLook)
+        val style = Styles.choose(session.analysis, r, forcedLook, opts.pace, session.media.count { it.ok })
         val shots = Styles.planShots(session.analysis, style, r)
         ClipScanner.assign(shots, session.media, r)
         return Plan(style, shots, Styles.grid(session.analysis))
@@ -51,10 +62,11 @@ object ReelEngine {
         width: Int,
         height: Int,
         out: File,
+        title: String = "",
         progress: (String, Float) -> Unit,
     ): ReelResult {
         progress("Making your reel", 0.4f)
-        Renderer.render(context, session.analysis, plan.style, plan.shots, session.song, out, width, height) { f ->
+        Renderer.render(context, session.analysis, plan.style, plan.shots, session.song, out, width, height, title) { f ->
             progress("Making your reel", 0.4f + 0.6f * f)
         }
         return ReelResult(out, plan.style, plan.shots.size)
@@ -69,5 +81,5 @@ object ReelEngine {
         height: Int,
         out: File,
         progress: (String, Float) -> Unit,
-    ): ReelResult = render(context, session, plan(session, variation, forcedLook), width, height, out, progress)
+    ): ReelResult = render(context, session, plan(session, variation, forcedLook), width, height, out, progress = progress)
 }
