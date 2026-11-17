@@ -160,7 +160,8 @@ object Styles {
         val hot: Int
         when {
             energetic -> { calm = fit(1.0); hot = fit(0.5) }
-            smooth -> { calm = near(share.coerceIn(2.6, 4.5), listOf(4, 8, 12, 16)); hot = calm }
+            // smooth: never under ~2.4 s (at 120+ BPM, 4 beats is only ~1.9 s, so it takes 8)
+            smooth -> { calm = near(share.coerceIn(2.6, 4.5), listOf(4, 8, 12, 16).filter { it * beat >= 2.4 }.ifEmpty { listOf(16) }); hot = calm }
             else -> {
                 calm = near(share.coerceIn(1.4, 2.6), listOf(2, 4, 8))
                 hot = if (calm > 1 && calm / 2 * beat >= 0.9) calm / 2 else calm
