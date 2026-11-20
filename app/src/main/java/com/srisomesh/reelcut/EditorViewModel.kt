@@ -246,7 +246,7 @@ class EditorViewModel(private val app: Application) : AndroidViewModel(app) {
         exportJob = viewModelScope.launch {
             try {
                 val out = Library.newFile(app)
-                Renderer.export(app, TimelineComposer.build(p, 1080, 1920), out, 1080) { f -> exporting.value = f }
+                Renderer.export(app, { TimelineComposer.build(p, 1080, 1920) }, out, 1080) { f -> exporting.value = f }
                 withContext(Dispatchers.IO) {
                     Library.finish(out, p.name)
                     Library.saveToGallery(app, out)

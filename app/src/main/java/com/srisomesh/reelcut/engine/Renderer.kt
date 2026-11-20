@@ -52,12 +52,15 @@ object Renderer {
         height: Int,
         title: String = "",
         onProgress: (Float) -> Unit,
-    ) = export(context, buildComposition(context, a, style, shots, songUri, width, height, title), out, width, onProgress)
+    ) = export(context, { buildComposition(context, a, style, shots, songUri, width, height, title) }, out, width, onProgress)
 
-    /** Encodes any composition to an MP4 (auto reels and timeline projects). */
+    /**
+     * Encodes a composition to an MP4 (auto reels and timeline projects). [make] builds it; it is called again
+     * for the fallback try, because the effects keep timing state from the run they were used in.
+     */
     suspend fun export(
         context: Context,
-        composition: Composition,
+        make: () -> Composition,
         out: File,
         width: Int,
         onProgress: (Float) -> Unit,
@@ -65,6 +68,26 @@ object Renderer {
         out.parentFile?.mkdirs()
         if (out.exists()) out.delete()
         val bitrate = if (width >= 1080) 14_000_000 else 6_000_000
+        // Portrait reels are saved as real portrait video. Media3 otherwise stores them sideways with a "rotate 90"
+        // note, which many apps (WhatsApp, Instagram, galleries, editors) ignore and show stretched. If a phone's
+        // encoder refuses portrait, the old sideways way is used.
+        try {
+            exportOnce(context, make(), out, bitrate, portrait = true, onProgress)
+        } catch (e: ExportException) {
+            android.util.Log.w("ReelCut", "portrait encoding failed, trying the sideways way", e)
+            if (out.exists()) out.delete()
+            exportOnce(context, make(), out, bitrate, portrait = false, onProgress)
+        }
+    }
+
+    private suspend fun exportOnce(
+        context: Context,
+        composition: Composition,
+        out: File,
+        bitrate: Int,
+        portrait: Boolean,
+        onProgress: (Float) -> Unit,
+    ) {
         coroutineScope {
             var transformer: Transformer? = null
             val poll = launch {
@@ -78,6 +101,7 @@ object Renderer {
             try {
                 suspendCancellableCoroutine { cont ->
                     val tr = Transformer.Builder(context)
+                        .setPortraitEncodingEnabled(portrait)
                         .setVideoMimeType(MimeTypes.VIDEO_H264)
                         .setAudioMimeType(MimeTypes.AUDIO_AAC)
                         .setEncoderFactory(

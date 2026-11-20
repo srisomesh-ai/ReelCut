@@ -14,6 +14,7 @@ import com.srisomesh.reelcut.engine.ReelOptions
 import com.srisomesh.reelcut.engine.Shape
 import com.srisomesh.reelcut.engine.Trans
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -75,6 +76,10 @@ class RenderTest {
             val mmr = MediaMetadataRetriever()
             mmr.setDataSource(out.path)
             val durMs = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0
+            // saved upright: real width x height, no "rotate" note (apps that ignore the note showed reels stretched)
+            val vw = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toInt() ?: 0
+            val vh = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toInt() ?: 0
+            val rot = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toInt() ?: 0
             mmr.release()
             val a = session.analysis
             val fades = plan.shots.count { it.trans == Trans.FADE || it.trans == Trans.ZOOM }
@@ -85,11 +90,13 @@ class RenderTest {
                 "bass=${"%.3f".format(a.bass)} start=${"%.2f".format(a.start)} reelLen=${"%.2f".format(a.len)} " +
                 "beats=${a.rel.joinToString(",") { "%.2f".format(it) }} shots=${res.shots} " +
                 "shotMin=${"%.2f".format(lens.min())} shotMax=${"%.2f".format(lens.max())} cuts=${plan.shots.joinToString(",") { "%.2f".format(it.t1) }} " +
-                "outDurMs=$durMs bytes=${out.length()} analyseMs=${t1 - t0} renderMs=${t2 - t1} " +
+                "outDurMs=$durMs size=${vw}x$vh rotation=$rot bytes=${out.length()} analyseMs=${t1 - t0} renderMs=${t2 - t1} " +
                 "plan=${plan.shots.joinToString(";") { sh -> "%.2f-%.2f:%s:%s@%.2f".format(sh.t0, sh.t1, sh.trans, sh.media?.uri?.lastPathSegment, sh.src0) }}"
             Log.i("RCTEST", line)
             report.appendLine(line)
             assertTrue("reel ${i + 1} too small", out.length() > 50_000)
+            assertEquals("reel ${i + 1} saved with a rotate note", 0, rot)
+            assertEquals("reel ${i + 1} size", "${run.opts.shape.pw}x${run.opts.shape.ph}", "${vw}x$vh")
             assertTrue("reel ${i + 1} wrong length $durMs", kotlin.math.abs(durMs - a.len * 1000) < 700)
         }
         File(outDir, "report.txt").writeText(report.toString())

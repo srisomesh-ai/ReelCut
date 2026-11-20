@@ -60,7 +60,7 @@ class TimelineTest {
         val outDir = File(ctx.filesDir, "test-out").apply { mkdirs() }
         val out = File(outDir, "timeline.mp4")
         val t0 = SystemClock.uptimeMillis()
-        Renderer.export(ctx, TimelineComposer.build(p, 720, 1280), out, 720) { }
+        Renderer.export(ctx, { TimelineComposer.build(p, 720, 1280) }, out, 720) { }
         val renderMs = SystemClock.uptimeMillis() - t0
         val r = MediaMetadataRetriever()
         r.setDataSource(out.path)
