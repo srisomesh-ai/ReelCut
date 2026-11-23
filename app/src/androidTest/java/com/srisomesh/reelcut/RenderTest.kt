@@ -52,6 +52,7 @@ class RenderTest {
             Run("song_fast.mp3", 15.0, "vhs", ReelOptions(Pace.FAST, title = "DJ Night")),  // TV lines, PLAY stamp, glitch cuts
             Run("song_slow.m4a", 15.0, "vintage", ReelOptions(Pace.SMOOTH, Shape.SQUARE)), // grain, light leak, 1:1
             Run("song_fast.mp3", 15.0, "sunset", ReelOptions(Pace.NORMAL, Shape.WIDE)),    // colour wash, 16:9
+            Run("song_long.m4a", 120.0, null, ReelOptions(Pace.SMOOTH, title = "Two Minutes")), // 2-minute reel (23 Nov)
         )
         for ((i, run) in runs.withIndex()) {
             val songName = run.song

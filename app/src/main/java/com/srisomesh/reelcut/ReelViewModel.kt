@@ -18,6 +18,7 @@ import com.srisomesh.reelcut.engine.ReelEngine
 import com.srisomesh.reelcut.engine.ReelSession
 import com.srisomesh.reelcut.engine.Shot
 import com.srisomesh.reelcut.engine.ShotEdits
+import com.srisomesh.reelcut.engine.YouTube
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,8 +43,10 @@ sealed interface Screen {
         val exported: File? = null,
     ) : Screen
     data class Viewer(val item: Library.Item) : Screen
-    /** After picking clips + song: music, shape, cut speed, title, then Make reel. */
-    data class Setup(val songName: String) : Screen
+    /** After picking clips + song: music, shape, cut speed, title, then Make reel. [youtube] = the song came from YouTube. */
+    data class Setup(val songName: String, val youtube: Boolean = false) : Screen
+    /** YouTube song search; [back] = where Back goes (Home or the setup screen). */
+    data class YouTube(val back: Screen) : Screen
     /** Timeline editor with project [id] open. */
     data class Editor(val id: String) : Screen
     /** Fine-tune: the shots being edited (not yet applied), the selected one, and the result to go back to. */
@@ -75,17 +78,81 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
     fun setShape(s: Shape) { options.value = options.value.copy(shape = s); prefs.edit().putString("shape", s.name).apply() }
     fun setTitle(t: String) { options.value = options.value.copy(title = t.take(28)) }
 
-    /** Song picked: show the setup screen. */
-    fun songPicked(song: Uri) {
+    /** Song picked (a file, or a YouTube song saved to the phone): show the setup screen. */
+    fun songPicked(song: Uri, songName: String? = null, youtube: Boolean = false) {
         if (pendingMedia.size < 2) { say("Pick at least 2 clips or photos"); return }
         pendingSong = song
-        options.value = options.value.copy(title = "")
-        val name = runCatching {
+        // a new reel starts without a title; changing the song on the setup screen keeps the typed title
+        if (screen.value !is Screen.Setup && (screen.value as? Screen.YouTube)?.back !is Screen.Setup) {
+            options.value = options.value.copy(title = "")
+        }
+        val name = songName ?: runCatching {
             app.contentResolver.query(song, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
                 if (c.moveToFirst()) c.getString(0) else null
             }
         }.getOrNull() ?: "Your song"
-        screen.value = Screen.Setup(name)
+        screen.value = Screen.Setup(name, youtube)
+    }
+
+    // -------------------------------------------------------- YouTube songs ---
+
+    data class YtState(
+        val query: String = "",
+        val searching: Boolean = false,
+        val results: List<YouTube.Item> = emptyList(),
+        val error: String? = null,
+        val downloading: String? = null,    // url of the song being downloaded
+        val progress: Float = 0f,
+    )
+    val yt = MutableStateFlow(YtState())
+    private var ytJob: Job? = null
+
+    fun openYouTube() {
+        if (pendingMedia.size < 2) { say("Pick at least 2 clips or photos"); return }
+        val cur = screen.value
+        screen.value = Screen.YouTube(if (cur is Screen.Setup) cur else Screen.Home)
+    }
+
+    fun ytQuery(q: String) { yt.value = yt.value.copy(query = q.take(80)) }
+
+    fun ytSearch() {
+        val q = yt.value.query.trim()
+        if (q.isEmpty()) return
+        ytJob?.cancel()
+        yt.value = yt.value.copy(searching = true, error = null, results = emptyList())
+        ytJob = viewModelScope.launch {
+            try {
+                val r = YouTube.search(q)
+                yt.value = yt.value.copy(searching = false, results = r, error = if (r.isEmpty()) "No songs found. Try other words." else null)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                Log.e("ReelCut", "youtube search", e)
+                yt.value = yt.value.copy(searching = false, error = "YouTube search is not working right now. Check the internet and try again.")
+            }
+        }
+    }
+
+    /** Tap on a result: download its sound, then use it as the song. */
+    fun ytUse(item: YouTube.Item) {
+        if (yt.value.downloading != null) return
+        ytJob?.cancel()
+        yt.value = yt.value.copy(downloading = item.url, progress = 0f, error = null)
+        ytJob = viewModelScope.launch {
+            try {
+                val f = YouTube.download(item, java.io.File(app.cacheDir, "youtube")) { p -> yt.value = yt.value.copy(progress = p) }
+                yt.value = yt.value.copy(downloading = null)
+                val mins = item.seconds / 60
+                songPicked(Uri.fromFile(f), "${item.title} · $mins:${(item.seconds % 60).toString().padStart(2, '0')}", youtube = true)
+            } catch (c: CancellationException) {
+                yt.value = yt.value.copy(downloading = null)
+                throw c
+            } catch (e: Exception) {
+                Log.e("ReelCut", "youtube download", e)
+                yt.value = yt.value.copy(downloading = null)
+                say(e.message?.takeIf { e is IllegalArgumentException || e is IllegalStateException } ?: "This song could not be downloaded. Try another one.")
+            }
+        }
     }
     val reelLen = MutableStateFlow(15)
     val recent = MutableStateFlow(Library.list(app))
@@ -343,6 +410,11 @@ class ReelViewModel(private val app: Application) : AndroidViewModel(app) {
         when (screen.value) {
             is Screen.Working, is Screen.Result -> { job?.cancel(); screen.value = Screen.Home }
             is Screen.Viewer, is Screen.Setup -> screen.value = Screen.Home
+            is Screen.YouTube -> {
+                ytJob?.cancel()
+                yt.value = yt.value.copy(downloading = null, searching = false)
+                screen.value = (screen.value as Screen.YouTube).back
+            }
             is Screen.Editor -> { screen.value = Screen.Home; refreshLists() }
             is Screen.FineTune -> {
                 val ft = screen.value as Screen.FineTune

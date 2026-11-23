@@ -38,6 +38,13 @@ jobs:
           RC_KEY_PASS: ${{ secrets.RC_KEY_PASS }}
           VERSION_CODE: ${{ github.run_number }}
         run: gradle --no-daemon testDebugUnitTest assembleRelease
+      - name: YouTube check (information only, never fails the build)
+        continue-on-error: true
+        env:
+          RC_YT: "1"
+        run: |
+          gradle --no-daemon testDebugUnitTest --tests '*YouTubeLiveTest*' --rerun > /dev/null 2>&1 || true
+          cat app/build/yt-report.txt 2>/dev/null || echo "YT no report"
       - name: Name APK
         run: cp app/build/outputs/apk/release/app-release.apk "ReelCut-1.0.${{ github.run_number }}.apk"
       - uses: actions/upload-artifact@v4

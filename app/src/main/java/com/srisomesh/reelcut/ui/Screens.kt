@@ -42,6 +42,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -122,6 +126,7 @@ fun App(vm: ReelViewModel = viewModel(), evm: EditorViewModel = viewModel(), sta
                 Screen.Home -> HomeScreen(vm)
                 is Screen.Working -> WorkingScreen(s) { vm.back() }
                 is Screen.Setup -> SetupScreen(vm, s)
+                is Screen.YouTube -> YouTubeScreen(vm)
                 is Screen.Result -> ResultScreen(vm, s)
                 is Screen.Viewer -> ViewerScreen(vm, s.item)
                 is Screen.FineTune -> FineTuneScreen(vm, s)
@@ -136,6 +141,7 @@ fun App(vm: ReelViewModel = viewModel(), evm: EditorViewModel = viewModel(), sta
 
 // ---------------------------------------------------------------- Home ---
 
+@OptIn(ExperimentalLayoutApi::class)
 @UnstableApi
 @Composable
 private fun HomeScreen(vm: ReelViewModel) {
@@ -144,7 +150,8 @@ private fun HomeScreen(vm: ReelViewModel) {
     val projects by vm.projects.collectAsStateWithLifecycle()
     var showAbout by remember { mutableStateOf(false) }
     var projectMenu by remember { mutableStateOf<Project?>(null) }
-    val projectPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(20)) { uris ->
+    var songChoice by remember { mutableStateOf(false) }
+    val projectPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_PICK)) { uris ->
         if (uris.isNotEmpty()) vm.newProject(uris)
     }
     // projects and exported reels together, newest first
@@ -154,9 +161,9 @@ private fun HomeScreen(vm: ReelViewModel) {
     val songPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.songPicked(uri) else vm.say("Pick a song to continue")
     }
-    val mediaPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(20)) { uris ->
+    val mediaPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_PICK)) { uris ->
         when {
-            uris.size >= 2 -> { vm.setMedia(uris); songPicker.launch(arrayOf("audio/*")) }
+            uris.size >= 2 -> { vm.setMedia(uris); songChoice = true }
             uris.isNotEmpty() -> vm.say("Pick at least 2 clips or photos")
         }
     }
@@ -185,12 +192,12 @@ private fun HomeScreen(vm: ReelViewModel) {
                 "Pick clips and a song. The beat decides the edit.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(10, 15, 30).forEach { s ->
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                REEL_LENGTHS.forEach { s ->
                     FilterChip(
                         selected = len == s,
                         onClick = { vm.reelLen.value = s },
-                        label = { Text("${s}s") },
+                        label = { Text(lengthLabel(s)) },
                         shape = RoundedCornerShape(50),
                         colors = chipColors(),
                     )
@@ -238,6 +245,14 @@ private fun HomeScreen(vm: ReelViewModel) {
         }
     }
 
+    if (songChoice) {
+        SongChoiceDialog(
+            onFile = { songChoice = false; songPicker.launch(arrayOf("audio/*")) },
+            onYouTube = { songChoice = false; vm.openYouTube() },
+            onClose = { songChoice = false; vm.say("Pick a song to continue") },
+        )
+    }
+
     projectMenu?.let { pr ->
         var name by remember(pr.id) { mutableStateOf(pr.name) }
         var confirmDelete by remember(pr.id) { mutableStateOf(false) }
@@ -266,6 +281,46 @@ private fun HomeScreen(vm: ReelViewModel) {
             title = { Text("ReelCut") },
             text = { Text("Version ${BuildConfigInfo.versionName(LocalContext.current)}\nInternal app. Reels are made on this phone and saved to Movies/ReelCut.") },
         )
+    }
+}
+
+/** Reel lengths on the home screen (seconds); 1 and 2 minutes added 23 Nov. */
+private val REEL_LENGTHS = listOf(10, 15, 30, 60, 120)
+
+/** Most clips / photos per pick (was 20; 2-minute reels need more). */
+internal const val MAX_PICK = 40
+
+private fun lengthLabel(s: Int) = if (s >= 60) "${s / 60} min" else "${s}s"
+
+/** After picking clips: the song from a file on the phone, or from YouTube. */
+@Composable
+private fun SongChoiceDialog(onFile: () -> Unit, onYouTube: () -> Unit, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        confirmButton = { TextButton(onClick = onClose) { Text("Cancel") } },
+        title = { Text("Pick the song") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SongChoiceRow(Icons.Filled.Folder, "My song file", "From the phone", onFile)
+                SongChoiceRow(Icons.Filled.Search, "Search YouTube", "Type a song name", onYouTube)
+            }
+        },
+    )
+}
+
+@Composable
+private fun SongChoiceRow(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, sub: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = onClick).padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(icon, null)
+        Column {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -341,6 +396,9 @@ private fun WorkingScreen(s: Screen.Working, onCancel: () -> Unit) {
 @Composable
 private fun SetupScreen(vm: ReelViewModel, s: Screen.Setup) {
     val o by vm.options.collectAsStateWithLifecycle()
+    val songPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.songPicked(uri)
+    }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -351,7 +409,8 @@ private fun SetupScreen(vm: ReelViewModel, s: Screen.Setup) {
         }
         SetupTile("Music") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = true, onClick = {}, label = { Text("My song") }, shape = RoundedCornerShape(50), colors = chipColors())
+                FilterChip(selected = !s.youtube, onClick = { songPicker.launch(arrayOf("audio/*")) }, label = { Text("My song") }, shape = RoundedCornerShape(50), colors = chipColors())
+                FilterChip(selected = s.youtube, onClick = { vm.openYouTube() }, label = { Text("YouTube") }, shape = RoundedCornerShape(50), colors = chipColors())
             }
             Text(s.songName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }

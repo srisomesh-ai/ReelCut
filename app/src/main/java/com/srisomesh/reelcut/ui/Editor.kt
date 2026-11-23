@@ -116,7 +116,7 @@ fun EditorScreen(evm: EditorViewModel, onBack: () -> Unit) {
     var renaming by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
 
-    val addPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(20)) { uris ->
+    val addPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_PICK)) { uris ->
         if (uris.isNotEmpty()) evm.add(uris)
     }
 
