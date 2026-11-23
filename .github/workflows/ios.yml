@@ -1,0 +1,23 @@
+name: ReelCut iOS
+on:
+  push:
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: macos-15
+    steps:
+      - run: |
+          uname -m; sw_vers; xcodebuild -version; ls /Applications | grep -i xcode
+          cat > /tmp/m.swift <<'S'
+          import Metal
+          import CoreImage
+          let d = MTLCreateSystemDefaultDevice()
+          print("metal:", d?.name ?? "NONE")
+          S
+          swift /tmp/m.swift || true
+          xcrun simctl list runtimes
+          xcrun simctl list devicetypes | grep iPhone | tail -5
+          system_profiler SPDisplaysDataType | head -20
