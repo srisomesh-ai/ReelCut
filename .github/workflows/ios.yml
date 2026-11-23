@@ -1,23 +1,78 @@
+# ReelCut for iPhone (ios/): builds on a Mac, makes real reels in the iPhone simulator and checks them,
+# takes screenshots, and packs an unsigned IPA (sign / install with Sideloadly, Ad Hoc or TestFlight).
+# Pushes to main also publish the IPA as GitHub release ios-v1.0.N.
 name: ReelCut iOS
 on:
   push:
-    paths: ['ios/**', '.github/workflows/ios.yml']
+    paths: ['ios/**', '.github/workflows/ios.yml', '.github/scripts/ios-report.sh']
   workflow_dispatch: {}
 permissions:
   contents: write
 jobs:
-  probe:
+  ios:
+    name: iPhone build and simulator test
     runs-on: macos-15
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: ios
     steps:
-      - run: |
-          uname -m; sw_vers; xcodebuild -version; ls /Applications | grep -i xcode
-          cat > /tmp/m.swift <<'S'
-          import Metal
-          import CoreImage
-          let d = MTLCreateSystemDefaultDevice()
-          print("metal:", d?.name ?? "NONE")
-          S
-          swift /tmp/m.swift || true
-          xcrun simctl list runtimes
-          xcrun simctl list devicetypes | grep iPhone | tail -5
-          system_profiler SPDisplaysDataType | head -20
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app
+          brew install xcodegen
+          command -v ffmpeg || brew install ffmpeg
+          xcodegen generate
+      - name: Simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; c=[x for k,v in d.items() if 'iOS-18' in k for x in v if x['name'].startswith('iPhone 16') and 'Plus' not in x['name'] and 'Pro' not in x['name'] and 'e' != x['name'][-1]]; c=c or [x for k,v in d.items() if 'iOS-18' in k for x in v if x['name'].startswith('iPhone')]; print(c[-1]['udid'])")
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+      - name: Build and test in the simulator
+        run: |
+          set -o pipefail
+          mkdir -p out
+          TEST_RUNNER_RC_OUT="$PWD/out" xcodebuild test -project ReelCut.xcodeproj -scheme ReelCut -destination "id=$UDID" \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO SWIFT_OPTIMIZATION_LEVEL=-O 2>&1 | tee xcb.log \
+            | grep -E "error:|\.swift:[0-9]+:[0-9]+: warning|Test Case|Executed|BUILD|failed|XCTAssert" | grep -v "^ld: warning" | head -400
+      - name: Screens in the simulator
+        if: always()
+        run: |
+          APP=build/Build/Products/Debug-iphonesimulator/ReelCut.app
+          [ -d "$APP" ] || exit 0
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl terminate "$UDID" com.srisomesh.reelcut || true
+          xcrun simctl launch "$UDID" com.srisomesh.reelcut; sleep 8
+          xcrun simctl io "$UDID" screenshot out/sim_home.png
+          xcrun simctl terminate "$UDID" com.srisomesh.reelcut || true
+          xcrun simctl launch "$UDID" com.srisomesh.reelcut -open_project test_timeline; sleep 15
+          xcrun simctl io "$UDID" screenshot out/editor.png
+      - name: Results
+        if: always()
+        run: bash ../.github/scripts/ios-report.sh; tail -60 xcb.log | grep -v "^\s*$" | tail -40
+      - name: IPA (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project ReelCut.xcodeproj -scheme ReelCut -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build-dev CODE_SIGNING_ALLOWED=NO CURRENT_PROJECT_VERSION=${{ github.run_number }} MARKETING_VERSION=1.0.${{ github.run_number }} build 2>&1 \
+            | grep -E "error:|BUILD" | tail -20
+          mkdir -p Payload && cp -R build-dev/Build/Products/Release-iphoneos/ReelCut.app Payload/
+          zip -qry "ReelCut-iOS-1.0.${{ github.run_number }}.ipa" Payload
+          ls -la *.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReelCut-iOS
+          path: |
+            ios/*.ipa
+            ios/out/*.png
+            ios/out/*.mp4
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "ios-v1.0.${{ github.run_number }}" ReelCut-iOS-*.ipa \
+            --title "ReelCut iPhone 1.0.${{ github.run_number }}" \
+            --notes "Internal iPhone build from ${GITHUB_SHA::7} (unsigned: install with Sideloadly using an Apple ID, or sign for Ad Hoc / TestFlight)."

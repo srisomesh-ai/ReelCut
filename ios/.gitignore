@@ -1,0 +1,8 @@
+build/
+build-dev/
+out/
+Payload/
+*.ipa
+*.xcodeproj/
+ReelCut/Info.plist
+xcb.log
