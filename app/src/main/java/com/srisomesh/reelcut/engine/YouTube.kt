@@ -69,11 +69,10 @@ object YouTube {
         }
     }
 
-    /** Songs first (YouTube Music); if none, ordinary videos. */
+    /** The same results as searching on YouTube (YouTube Music's song search matched names badly). */
     suspend fun search(query: String): List<Item> = withContext(Dispatchers.IO) {
         init()
-        val songs = runCatching { find(query, YoutubeSearchQueryHandlerFactory.MUSIC_SONGS) }.getOrDefault(emptyList())
-        songs.ifEmpty { find(query, YoutubeSearchQueryHandlerFactory.VIDEOS) }
+        find(query, YoutubeSearchQueryHandlerFactory.VIDEOS)
     }
 
     private fun find(query: String, filter: String): List<Item> {
